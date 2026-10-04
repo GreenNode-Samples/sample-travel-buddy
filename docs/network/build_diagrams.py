@@ -459,7 +459,7 @@ def scene(show, conns, title):
     s = []
     if has("internet"):
         s.append(group(20, 16, W - 40, 94, "Internet", "internet"))
-        s.append(node(90, 40, "registry", C["gray"], "Public registry", ["alternative to vCR (opt-in)", "Docker Hub · GHCR …"], "right"))
+        s.append(node(130, 40, "registry", C["gray"], "Public registry", ["alternative to vCR (opt-in)", "Docker Hub · GHCR …"], "right"))
         s.append(node(1330, 40, "mcp", C["mcp"], "MCP servers on the Internet", ["Tavily · GitHub · Slack …"], "right"))
 
     s.append(group(20, 130, 1320, 1170 + DY + SH, "GreenNode Cloud", "cloud"))
@@ -731,7 +731,7 @@ def d4():
 
 
 # ═════════════════════════ architecture of each sample repo ═══════════════════════
-# Each diagram is written to docs/architecture.svg of the matching sibling repo.
+# Each diagram is written to docs/<name>.svg of the matching sibling repo (see ARCH_JOBS).
 def a_travel():
     """sample-travel-buddy: web users -> Runtime (UI + LangGraph) -> LLM / Memory; Tavily through a Public MCP Gateway."""
     W, Hh = 1500, 470
@@ -829,8 +829,78 @@ def a_zalo():
 
 
 def a_stock():
-    """sample-mcp-stock-server: Agent -> MCP Gateway (connector stock, API key) -> vn-stock-mcp -> 24hMoney."""
-    W, Hh = 1500, 560
+    """sample-mcp-stock-server: the same image deployed in three places, side by side:
+    (a) Agent Runtime behind a Public gateway, (b) vServer / VKS in the customer VPC behind a Private gateway,
+    (c) on-premises behind a Private gateway with Route CIDRs. The server always calls the public 24hMoney API."""
+    W, Hh = 1620, 836
+    s = []
+    cols = [(20, "(a) Agent Runtime on AgentBase", "MCP Gateway: Public"),
+            (560, "(b) vServer / VKS in your VPC", "MCP Gateway: Private (VPC + Subnet)"),
+            (1100, "(c) On-premises data center", "MCP Gateway: Private + Route CIDRs (on-prem)")]
+    for x0, head, sub in cols:
+        s.append(text(x0, 34, head, 14, 700, INK) + text(x0, 52, sub, 11.5, 400, SLATE))
+        s.append(group(x0, 66, 500, 214, "AgentBase Platform — managed by GreenNode", "managed"))
+        s.append(group(x0, 670, 500, 126, "Internet", "internet"))
+
+    # (a) everything on AgentBase; the runtime endpoint is public, so both protection layers apply
+    x0 = 20
+    s.append(node(x0 + 40, 130, "agent-runtime", C["compute"], "Agent", ["Agent Runtime"]))
+    s.append(node(x0 + 200, 130, "mcp-gateway", C["net"], "MCP Gateway", ["Public · connector stock"]))
+    s.append(node(x0 + 360, 130, "mcp", C["mcp"], "vn-stock-mcp", ["Agent Runtime · Public"], badge="agent-runtime"))
+    s.append(card(x0, 310, 330, 95, "Public runtime endpoint", [
+        ("API key", "fail-closed: 401 / 503"),
+        ("IP Access Control", "allowed source CIDRs"),
+        ("VPC / VPN", "not needed"),
+    ]))
+    s.append(node(x0 + 360, 700, "globe", C["gray"], "24hMoney API", ["public · unofficial"]))
+    s.append(arrow([(x0 + 88, 154), (x0 + 200, 154)], "req", "tools/call", (x0 + 144, 146)))
+    s.append(arrow([(x0 + 248, 154), (x0 + 360, 154)], "req", "X-Api-Key", (x0 + 304, 146)))
+    s.append(arrow([(x0 + 384, 216), (x0 + 384, 700)], "req", "HTTPS", (x0 + 394, 600), "start"))
+
+    # (b) Private gateway -> private connection -> server in a private subnet; egress through NAT / proxy
+    x0 = 560
+    s.append(abvpc(x0 + 12, 100, 476, 170))
+    s.append(node(x0 + 60, 150, "agent-runtime", C["compute"], "Agent", ["Agent Runtime · Private"]))
+    s.append(node(x0 + 250, 150, "mcp-gateway", C["net"], "MCP Gateway", ["Private · connector stock"]))
+    s.append(group(x0, 300, 500, 300, "Customer VPC · xx.xx.x.x/xx", "vpc"))
+    s.append(group(x0 + 16, 340, 300, 240, "Private subnet · MCP", "private"))
+    s.append(node(x0 + 110, 420, "mcp", C["mcp"], "vn-stock-mcp", ["vServer / VKS · :8443", "from 172.30.0.0/16"], badge="gn-server"))
+    s.append(node(x0 + 380, 420, "gn-vnet", C["net"], "NAT / proxy", ["Internet egress"]))
+    s.append(node(x0 + 380, 700, "globe", C["gray"], "24hMoney API", ["public · unofficial"]))
+    s.append(arrow([(x0 + 108, 174), (x0 + 250, 174)], "req", "tools/call", (x0 + 179, 166)))
+    s.append(arrow([(x0 + 274, 238), (x0 + 274, 396), (x0 + 134, 396), (x0 + 134, 420)], "req"))
+    s.append(text(x0 + 284, 292, "private connection", 10.5, 600, INK, "start", halo=True))
+    s.append(arrow([(x0 + 158, 444), (x0 + 380, 444)], "req", "24hMoney :443", (x0 + 268, 436)))
+    s.append(arrow([(x0 + 404, 506), (x0 + 404, 700)], "req", "HTTPS", (x0 + 414, 640), "start"))
+
+    # (c) Private gateway (Route CIDRs = on-prem) -> customer VPC -> VPN / Interconnect -> data center
+    x0 = 1100
+    s.append(abvpc(x0 + 12, 100, 476, 170))
+    s.append(node(x0 + 60, 150, "agent-runtime", C["compute"], "Agent", ["Agent Runtime · Private"]))
+    s.append(node(x0 + 250, 150, "mcp-gateway", C["net"], "MCP Gateway", ["Private · Route CIDRs = on-prem"]))
+    s.append(group(x0, 300, 500, 150, "Customer VPC · xx.xx.x.x/xx", "vpc"))
+    s.append(node(x0 + 250, 330, "gn-vnet", C["net"], "VPN GW / Interconnect", ["route: on-prem CIDR"]))
+    s.append(group(x0, 480, 500, 160, "On-premises · xx.xx.x.x/xx", "onprem"))
+    s.append(node(x0 + 250, 520, "firewall", C["gray"], "Firewall", ["allow VPC CIDR", "and 172.30.0.0/16"]))
+    s.append(node(x0 + 90, 520, "mcp", C["mcp"], "vn-stock-mcp", ["host · :8443"]))
+    s.append(node(x0 + 90, 700, "globe", C["gray"], "24hMoney API", ["public · unofficial"]))
+    s.append(arrow([(x0 + 108, 174), (x0 + 250, 174)], "req", "tools/call", (x0 + 179, 166)))
+    s.append(arrow([(x0 + 274, 238), (x0 + 274, 330)], "req"))
+    s.append(text(x0 + 284, 292, "private connection", 10.5, 600, INK, "start", halo=True))
+    s.append(arrow([(x0 + 274, 418), (x0 + 274, 520)], "vpn", both=True))
+    s.append(text(x0 + 284, 466, "VPN (IPsec) / Interconnect", 10.5, 600, C["sec"], "start", halo=True))
+    s.append(arrow([(x0 + 250, 544), (x0 + 138, 544)], "req", "tcp/8443", (x0 + 194, 536)))
+    s.append(arrow([(x0 + 114, 606), (x0 + 114, 700)], "req", "HTTPS via DC proxy / NAT", (x0 + 124, 655), "start"))
+
+    s.append(legend(30, Hh - 14, [("req", "request / data path"), ("vpn", "Site-to-Site VPN (IPsec) / Interconnect")]))
+    return svg(W, Hh, s, "mcp-stock-server deployment architecture: the same image runs (a) on Agent Runtime behind a Public "
+               "MCP Gateway, (b) on vServer / VKS in the customer VPC behind a Private gateway, or (c) on-premises behind a "
+               "Private gateway with Route CIDRs; in every case the server calls the public 24hMoney API")
+
+
+def a_stock_flow():
+    """sample-mcp-stock-server call flow: Agent -> MCP Gateway (connector stock, API key) -> vn-stock-mcp -> 24hMoney."""
+    W, Hh = 1500, 490
     s = []
     s.append(group(20, 20, 1200, 440, "AgentBase Platform — managed by GreenNode", "managed"))
     s.append(node(60, 215, "agent-runtime", C["compute"], "Agent", ["travel-buddy · your agents"]))
@@ -854,13 +924,6 @@ def a_stock():
     s.append(arrow([(918, m), (1030, m)], "req", "OK", (974, m - 8)))
     s.append(arrow([(1078, m), (1310, m)], "req", "HTTPS", (1270, m - 8)))
     s.append(steps_svg([[(180, 255)], [(584, 160)], [(785, m + 16)], [(974, m + 16)], [(1150, m + 16)]]))
-    # the same image runs in three places
-    s.append(text(20, 500, "One image, three deployment targets:", 12, 700, INK))
-    for x, ic, t1, t2 in [(290, "agent-runtime", "Agent Runtime", "gateway Public"),
-                          (610, "gn-vks", "vServer / VKS in the customer VPC", "gateway Private"),
-                          (1000, "building", "On-premises (VPN / Interconnect)", "gateway Private + Route CIDRs")]:
-        s.append(icon(x, 472, ic, C["compute"] if ic != "building" else MUTED))
-        s.append(text(x + 58, 492, t1, 11.5, 700, INK) + text(x + 58, 508, t2, 10.5, 400, SLATE))
     s.append(legend(30, Hh - 14, [("req", "request / data path")]))
     return svg(W, Hh, s, "mcp-stock-server architecture: agents call tools through a Public MCP Gateway; the stock connector "
                "attaches an API key from Access Control; the server validates the key and calls the 24hMoney API")
@@ -950,9 +1013,12 @@ def a_onprem():
 
 
 ROOT = OUT.parents[2]          # the sample-repos folder that holds the sibling repos
-ARCH_JOBS = [("sample-travel-buddy", a_travel), ("sample-zalo-restaurant", a_zalo),
-             ("sample-mcp-stock-server", a_stock), ("sample-byo-agent-mcp-gateway", a_byo),
-             ("sample-onprem-mcp-vpn", a_onprem)]
+ARCH_JOBS = [("sample-travel-buddy", "architecture.svg", a_travel),
+             ("sample-zalo-restaurant", "architecture.svg", a_zalo),
+             ("sample-mcp-stock-server", "architecture.svg", a_stock),
+             ("sample-mcp-stock-server", "call-flow.svg", a_stock_flow),
+             ("sample-byo-agent-mcp-gateway", "architecture.svg", a_byo),
+             ("sample-onprem-mcp-vpn", "architecture.svg", a_onprem)]
 
 
 JOBS = [("01-connectivity-map.svg", d1), ("02-uc-public.svg", d_public), ("03-uc-private-cloud.svg", d2),
@@ -962,9 +1028,9 @@ if __name__ == "__main__":
     for name, fn in JOBS:
         (OUT / name).write_text(fn(), encoding="utf-8")
         print("✓", name)
-    for repo, fn in ARCH_JOBS:          # architecture diagram of each sample repo
+    for repo, name, fn in ARCH_JOBS:    # diagrams of each sample repo
         d = ROOT / repo / "docs"
         if d.parent.is_dir():
             d.mkdir(exist_ok=True)
-            (d / "architecture.svg").write_text(fn(), encoding="utf-8")
-            print("✓", repo + "/docs/architecture.svg")
+            (d / name).write_text(fn(), encoding="utf-8")
+            print("✓", f"{repo}/docs/{name}")
