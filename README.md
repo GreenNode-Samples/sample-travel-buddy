@@ -73,9 +73,9 @@ Details for each use case (MCP in a cloud VPC, MCP on-premises) and how to conne
 
 | Concern | How |
 |---|---|
-| Runaway loops | `ModelCallLimitMiddleware(run_limit=10)` ends the turn; `ToolCallLimitMiddleware(run_limit=8)` refuses further tool calls with an error the model reads, so it still writes an answer |
+| Runaway loops | `ModelCallLimitMiddleware(run_limit=10)` ends the turn with a friendly Vietnamese apology; `ToolCallLimitMiddleware(run_limit=8)` refuses further tool calls with an error the model reads, so it still writes an answer |
 | Failing tools | `ToolErrorMiddleware`: an exception in any tool (MCP call, `remember`, `recall`) becomes an error message for the model (exception type only, no trace) instead of killing the turn |
-| Transient LLM errors | `ModelRetryMiddleware(max_retries=2)` on connection errors, 429 and 5xx, on top of the OpenAI client's own retries |
+| Transient LLM errors | `ModelRetryMiddleware(max_retries=2)` on connection errors, 429 and 5xx. It is the only retry layer (the OpenAI client runs with `max_retries=0`), so a dead LLM costs at most 3 attempts of 60 s |
 | Context size | `SummarizationMiddleware`: above ~16,000 tokens the older messages are replaced by a summary and the last 12 are kept; AI tool calls are never separated from their tool results |
 | Current date | a dynamic prompt writes "now" in `Asia/Ho_Chi_Minh` into the system prompt on every model call (the agent object is cached for the life of the process) |
 | Tool output size | MCP tool results are capped at 8,000 characters with a `...[truncated N chars]` marker |

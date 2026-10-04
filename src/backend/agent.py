@@ -40,6 +40,7 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
     ToolErrorMiddleware,
     dynamic_prompt,
+    hook_config,
 )
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool, ToolException
@@ -83,7 +84,6 @@ TZ_VN = ZoneInfo("Asia/Ho_Chi_Minh")
 LLM_TEMPERATURE = 0.4
 LLM_MAX_TOKENS = 1500
 LLM_TIMEOUT_SECONDS = 60
-LLM_MAX_RETRIES = 2
 
 # Per-turn safety caps. A turn is one user message, however many model/tool steps it takes.
 MODEL_CALL_LIMIT = 10
@@ -101,8 +101,14 @@ KEEP_MESSAGES = 12
 # Refresh the MCP tool list now and then so gateway changes (new targets, policy) are picked up.
 TOOLS_TTL_SECONDS = 600
 
-# Shown when the model ends a turn without any text.
+# User-facing replies (Vietnamese, like the bot itself).
+# FALLBACK_REPLY: the model ended a turn without any text.
 FALLBACK_REPLY = "Xin lỗi, mình chưa trả lời được câu này. Bạn thử diễn đạt lại giúp mình nhé."
+# LIMIT_REPLY: the turn hit MODEL_CALL_LIMIT.
+LIMIT_REPLY = (
+    "Xin lỗi, câu hỏi này cần quá nhiều bước để trả lời. "
+    "Bạn thử chia nhỏ câu hỏi hoặc hỏi cụ thể hơn giúp mình nhé."
+)
 
 SYSTEM_PROMPT = """\
 # Role
@@ -280,7 +286,8 @@ def _tool_error_text(exc: Exception, request: ToolCallRequest) -> str:
     )
 
 
-# Errors worth a second layer of retry on top of the OpenAI client's own `max_retries`.
+# Transient LLM errors that ModelRetryMiddleware retries. It is the ONLY retry layer: ChatOpenAI
+# runs with max_retries=0, otherwise both layers multiply (3 x 3 attempts of up to 60 s each).
 _LLM_TRANSIENT_ERRORS = (
     openai.APIConnectionError,  # includes APITimeoutError
     openai.RateLimitError,
@@ -309,6 +316,17 @@ def _get_checkpointer() -> AgentBaseMemoryEvents:
     return _checkpointer
 
 
+class _TurnCapMiddleware(ModelCallLimitMiddleware):
+    """ModelCallLimit that ends the turn with LIMIT_REPLY instead of the library's English text."""
+
+    @hook_config(can_jump_to=["end"])
+    def before_model(self, state, runtime):
+        update = super().before_model(state, runtime)
+        if update and update.get("jump_to") == "end":
+            update["messages"] = [AIMessage(LIMIT_REPLY)]
+        return update  # abefore_model delegates to this method
+
+
 def _build_agent(mcp_tools: list[StructuredTool]):
     llm = ChatOpenAI(
         model=LLM_MODEL,
@@ -317,7 +335,7 @@ def _build_agent(mcp_tools: list[StructuredTool]):
         temperature=LLM_TEMPERATURE,
         max_tokens=LLM_MAX_TOKENS,
         timeout=LLM_TIMEOUT_SECONDS,
-        max_retries=LLM_MAX_RETRIES,
+        max_retries=0,  # retries are ModelRetryMiddleware's job, see _LLM_TRANSIENT_ERRORS
     )
     return create_agent(
         llm,
@@ -331,7 +349,7 @@ def _build_agent(mcp_tools: list[StructuredTool]):
                 trigger=("tokens", SUMMARIZE_AT_TOKENS),
                 keep=("messages", KEEP_MESSAGES),
             ),
-            ModelCallLimitMiddleware(run_limit=MODEL_CALL_LIMIT, exit_behavior="end"),
+            _TurnCapMiddleware(run_limit=MODEL_CALL_LIMIT, exit_behavior="end"),
             # "continue": calls over the limit get an error message and the model still writes
             # the final answer; ModelCallLimit above is the hard stop.
             ToolCallLimitMiddleware(run_limit=TOOL_CALL_LIMIT, exit_behavior="continue"),

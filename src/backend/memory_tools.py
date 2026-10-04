@@ -37,7 +37,7 @@ MEMORY_STRATEGY_PREF_ID = os.environ.get("MEMORY_STRATEGY_PREF_ID", "")
 MEMORY_STRATEGY_FACTS_ID = os.environ.get("MEMORY_STRATEGY_FACTS_ID", "")
 
 # Top-k per strategy and minimum similarity score for `recall`. The score scale is defined
-# by the Memory service; tune the threshold against your own data.
+# by the Memory service (higher = more similar); tune the threshold against your own data.
 RECALL_LIMIT = 5
 RECALL_MIN_SCORE = 0.3
 MAX_FACT_CHARS = 500

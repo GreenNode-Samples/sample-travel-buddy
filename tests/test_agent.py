@@ -32,7 +32,8 @@ def rig(monkeypatch):
     rig.tool_defs = [SEARCH_TOOL]
     rig.tool_calls = []
 
-    monkeypatch.setattr(agent, "ChatOpenAI", lambda **kwargs: model)
+    rig.llm_kwargs = {}
+    monkeypatch.setattr(agent, "ChatOpenAI", lambda **kwargs: rig.llm_kwargs.update(kwargs) or model)
     monkeypatch.setattr(agent, "_checkpointer", AgentBaseMemoryEvents(memory_id="memory-test", memory_client=api))
     monkeypatch.setattr(memory_tools, "_client", sdk)
     monkeypatch.setattr(memory_tools, "_RETRY_BASE_DELAY", 0)
@@ -72,7 +73,10 @@ def test_a_model_that_always_calls_tools_stops_at_the_model_call_limit(rig):
     rig.model.script = [AIMessage("", tool_calls=[tool_call(f"c{i}")]) for i in range(40)]
     result = rig.turn("loop forever")
     assert len(rig.model.seen) == agent.MODEL_CALL_LIMIT
-    assert result.reply  # the turn returns a reply instead of raising GraphRecursionError
+    # the turn returns a localized reply instead of raising GraphRecursionError or leaking the
+    # library's English "Model call limits exceeded" text
+    assert result.reply == agent.LIMIT_REPLY
+    assert "limit" not in result.reply.lower()
 
 
 def test_tool_calls_over_the_limit_are_refused_and_the_model_still_answers(rig):
@@ -121,13 +125,34 @@ def test_tools_reject_bad_input_with_a_readable_message(rig):
     assert "must not be empty" in tool_message.content
 
 
+def test_a_capped_turn_does_not_poison_the_next_one(rig):
+    rig.model.script = [AIMessage("", tool_calls=[tool_call(f"c{i}")]) for i in range(40)]
+    assert rig.turn("loop").reply == agent.LIMIT_REPLY
+    rig.model.script = [AIMessage("a normal answer")]
+    assert rig.turn("something simple").reply == "a normal answer"  # the run counter starts again
+
+
 # --- model retries ---------------------------------------------------------------------------
+
+def test_model_retry_is_the_only_retry_layer(rig):
+    """ChatOpenAI retrying on top of ModelRetryMiddleware would multiply the attempts."""
+    rig.turn("hi")
+    assert rig.llm_kwargs["max_retries"] == 0
+    assert rig.llm_kwargs["timeout"] == agent.LLM_TIMEOUT_SECONDS == 60
 
 def test_transient_llm_errors_are_retried(rig):
     request = httpx.Request("POST", "https://llm.example/v1/chat/completions")
     rig.model.fail_with = [openai.APIConnectionError(request=request)]
     rig.model.script = [AIMessage("recovered")]
     assert rig.turn("hello").reply == "recovered"
+
+
+def test_retries_stop_after_max_retries_and_the_error_propagates(rig):
+    request = httpx.Request("POST", "https://llm.example/v1/chat/completions")
+    rig.model.fail_with = [openai.APIConnectionError(request=request)] * 5
+    with pytest.raises(openai.APIConnectionError):
+        rig.turn("hello")
+    assert len(rig.model.seen) == 3  # 1 call + max_retries=2
 
 
 def test_permanent_llm_errors_propagate_without_retry(rig):
@@ -380,7 +405,7 @@ def test_stream_does_not_leak_summarization_tokens(rig, monkeypatch):
 def test_stream_reply_comes_from_the_final_message_when_the_cap_ends_the_turn(rig):
     rig.model.script = [AIMessage("", tool_calls=[tool_call(f"c{i}")]) for i in range(40)]
     result = collect_stream("loop")[-1]
-    assert result.reply and len(rig.model.seen) == agent.MODEL_CALL_LIMIT
+    assert result.reply == agent.LIMIT_REPLY and len(rig.model.seen) == agent.MODEL_CALL_LIMIT
 
 
 def test_an_empty_model_answer_falls_back_to_a_message(rig):
