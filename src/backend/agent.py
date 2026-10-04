@@ -47,24 +47,33 @@ from langchain_openai import ChatOpenAI
 from pydantic import Field, create_model
 
 import mcp_client
-from memory_tools import MEMORY_ID, MEMORY_STRATEGY_PREF_ID, recall, remember
+from memory_tools import MEMORY_ID, MEMORY_STRATEGY_FACTS_ID, MEMORY_STRATEGY_PREF_ID, recall, remember
 
 if TYPE_CHECKING:
     from langchain.agents.middleware import ToolCallRequest
 
+# The values in .env.example start with this marker. Starting with one of them would only
+# fail later with an obscure 401, so it is rejected at startup.
+PLACEHOLDER = "change-me"
+
+
+def _configured(name: str, value: str, hint: str) -> str:
+    if not value or value.startswith(PLACEHOLDER):
+        raise ValueError(f"{name} is not configured: {hint}")
+    return value
+
+
 LLM_MODEL = os.environ.get("LLM_MODEL", "z-ai/glm-5.3-flash")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://maas-llm-aiplatform-hcm.api.vngcloud.vn/v1")
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-MCP_TAVILY_URL = os.environ.get("MCP_TAVILY_URL", "")
-
-if not LLM_API_KEY:
-    raise ValueError("LLM_API_KEY is required (create an LLM API key in the AgentBase console).")
-if not MEMORY_ID:
-    raise ValueError("AGENTBASE_MEMORY_ID is required (create a Memory in the AgentBase console).")
-if not MEMORY_STRATEGY_PREF_ID:
-    raise ValueError("MEMORY_STRATEGY_PREF_ID is required (the strategy `remember` writes to).")
-if not MCP_TAVILY_URL:
-    raise ValueError("MCP_TAVILY_URL is required (the connector endpoint on the MCP Gateway).")
+LLM_API_KEY = _configured(
+    "LLM_API_KEY", os.environ.get("LLM_API_KEY", ""), "create an LLM API key in the AgentBase console"
+)
+MCP_TAVILY_URL = _configured(
+    "MCP_TAVILY_URL", os.environ.get("MCP_TAVILY_URL", ""), "the connector endpoint on the MCP Gateway"
+)
+_configured("AGENTBASE_MEMORY_ID", MEMORY_ID, "create a Memory in the AgentBase console")
+_configured("MEMORY_STRATEGY_PREF_ID", MEMORY_STRATEGY_PREF_ID, "the strategy `remember` writes to")
+_configured("MEMORY_STRATEGY_FACTS_ID", MEMORY_STRATEGY_FACTS_ID, "the second strategy `recall` searches")
 
 logger = logging.getLogger("travel-buddy")
 

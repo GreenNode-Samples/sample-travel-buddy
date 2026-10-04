@@ -64,6 +64,8 @@ AGENT_NAME = "travel-buddy"
 # the X-API-Key header. Memory is partitioned by a user id the CLIENT chooses, so without a key
 # anyone who can reach the endpoint can read any user's memory and spend your LLM credits.
 AGENT_API_KEY = os.environ.get("AGENT_API_KEY", "").strip()
+if AGENT_API_KEY.startswith(agent_mod.PLACEHOLDER):
+    raise ValueError("AGENT_API_KEY still has the .env.example placeholder: set a random secret or remove it.")
 # DEBUG_OPS=1 enables the `whoami` op (exposes the runtime identity; only for policy setup).
 DEBUG_OPS = os.environ.get("DEBUG_OPS", "0").strip().lower() in ("1", "true", "yes")
 # Public URL of this runtime, written into the A2A agent card.
