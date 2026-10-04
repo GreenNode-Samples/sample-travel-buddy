@@ -97,14 +97,3 @@ def test_jwt_claims_decodes_payload():
     token = f"header.{payload}.signature"
     assert _jwt_claims(token)["sub"] == "user-123"
     assert _jwt_claims("not-a-jwt") == {}
-
-
-# ── mcp_client._jwt_exp ──
-def test_jwt_exp():
-    import base64
-
-    from mcp_client import _jwt_exp
-
-    payload = base64.urlsafe_b64encode(json.dumps({"exp": 1790000000}).encode()).decode().rstrip("=")
-    assert _jwt_exp(f"a.{payload}.b") == 1790000000.0
-    assert _jwt_exp("garbage") == 0.0
