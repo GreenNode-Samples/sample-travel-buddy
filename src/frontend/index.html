@@ -12,10 +12,10 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- Khung 3 cột: sidebar (người dùng/phiên) | chat | panel bộ nhớ -->
+  <!-- 3-column layout: sidebar (users/sessions) | chat | memory panel -->
   <div id="layout">
 
-    <!-- ===== CỘT TRÁI: người dùng & phiên hội thoại ===== -->
+    <!-- ===== LEFT COLUMN: users and conversation sessions ===== -->
     <aside class="sidebar" aria-label="Người dùng và phiên hội thoại">
       <div class="brand">
         <div class="brand-logo" aria-hidden="true">
@@ -49,7 +49,7 @@
         </section>
       </div>
 
-      <!-- Thông tin agent (GET /api/info) -->
+      <!-- Agent info (GET /api/info) -->
       <div class="info-box" id="infoBox">
         <div class="info-title">Thông tin agent</div>
         <div class="info-line"><span>Agent</span><b id="infoAgent">—</b></div>
@@ -59,7 +59,7 @@
       </div>
     </aside>
 
-    <!-- ===== CỘT GIỮA: hội thoại ===== -->
+    <!-- ===== MIDDLE COLUMN: conversation ===== -->
     <main class="chat">
       <header class="chat-header">
         <div class="chips">
@@ -70,7 +70,7 @@
         <button id="memoryToggle" class="btn ghost small only-narrow" type="button">Bộ nhớ</button>
       </header>
 
-      <!-- Bong bóng hội thoại được render bằng JS -->
+      <!-- Message bubbles are rendered by app.js -->
       <div class="chat-messages" id="chatMessages" aria-live="polite"></div>
 
       <footer class="composer">
@@ -88,7 +88,7 @@
       </footer>
     </main>
 
-    <!-- ===== CỘT PHẢI: bộ nhớ của agent ===== -->
+    <!-- ===== RIGHT COLUMN: the agent's memory ===== -->
     <aside class="memory-panel" id="memoryPanel" aria-label="Bộ nhớ của agent">
       <div class="panel-head">
         <div id="memoryTitle" class="panel-title">
@@ -105,7 +105,7 @@
       </div>
 
       <div class="panel-scroll">
-        <!-- Nhóm memory records theo strategy (GET /api/memory) -->
+        <!-- Memory records grouped by strategy (GET /api/memory) -->
         <div id="memoryBody" class="memory-body"></div>
 
         <section class="panel-section">
@@ -113,7 +113,7 @@
           <div id="recentList" class="recent-list"></div>
         </section>
 
-        <!-- Giải thích ngắn về cơ chế bộ nhớ -->
+        <!-- Short explanation of how the memory works -->
         <div class="mem-explainer">
           Memory records được sinh tự động từ hội thoại (strategies CUSTOM + SEMANTIC)
           và lưu theo từng user (actorId).
@@ -122,7 +122,7 @@
     </aside>
   </div>
 
-  <!-- Toast lỗi (tự ẩn sau 6s, có nút đóng) -->
+  <!-- Error toast (hides after 6 s, has a close button) -->
   <div class="toast" id="toast" role="alert" aria-live="assertive">
     <span id="toastMsg"></span>
     <button id="toastClose" class="toast-close" type="button" aria-label="Đóng thông báo">✕</button>

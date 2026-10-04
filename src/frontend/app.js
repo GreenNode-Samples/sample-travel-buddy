@@ -1,12 +1,12 @@
 /* ============================================================
-   Travel Buddy — trợ lý du lịch có trí nhớ
-   Frontend vanilla JS: không build step, không CDN, không framework.
-   Backend phục vụ tĩnh tại GET / (cùng origin → fetch tương đối).
+   Travel Buddy - a travel assistant with memory
+   Vanilla JS frontend: no build step, no CDN, no framework.
+   The backend serves it at GET / (same origin, so fetches are relative).
    ============================================================ */
 
 "use strict";
 
-/* ------------------- Hằng số & tiện ích chung ------------------- */
+/* ------------------- Constants and helpers ------------------- */
 
 const $ = (id) => document.getElementById(id);
 
@@ -19,20 +19,22 @@ const API = {
   STREAM: "/api/chat/stream",
 };
 
-// Header bắt buộc khi POST /invocations
+// Headers required by the chat endpoints (they partition memory per user and session)
 const HDR_USER = "X-GreenNode-AgentBase-User-Id";
 const HDR_SESSION = "X-GreenNode-AgentBase-Session-Id";
+const HDR_KEY = "X-API-Key";
+const KEY_STORAGE = "travelBuddyApiKey";
 
 const state = {
   actors: [],     // [{ actorId, sessions: [string] }]
-  actor: null,    // actorId đang chọn
-  session: null,  // sessionId đang chọn
-  info: null,     // kết quả GET /api/info
-  sending: false, // đang chờ agent trả lời
-  viewToken: 0,   // tăng mỗi khi đổi phiên → bỏ qua response cũ
+  actor: null,    // selected actorId
+  session: null,  // selected sessionId
+  info: null,     // result of GET /api/info
+  sending: false, // waiting for the agent's reply
+  viewToken: 0,   // bumped whenever the session changes, so stale responses are ignored
 };
 
-let memoryToken = 0; // tránh race khi tải /api/memory
+let memoryToken = 0; // avoids races while loading /api/memory
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => (
@@ -45,7 +47,7 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
-// Tên user mới → slug chữ thường (bỏ dấu tiếng Việt)
+// New user name -> lowercase slug (Vietnamese diacritics removed)
 function slugify(s) {
   return String(s)
     .toLowerCase()
@@ -57,7 +59,7 @@ function slugify(s) {
     .slice(0, 48);
 }
 
-// Thời gian tương đối ("x phút trước"), fallback về chuỗi gốc
+// Relative time ("5 minutes ago" in Vietnamese); falls back to the raw string
 function relativeTime(raw) {
   if (!raw) return "";
   const t = new Date(raw).getTime();
@@ -72,15 +74,15 @@ function relativeTime(raw) {
   return String(raw);
 }
 
-/* ------------------- Markdown tối giản -------------------
-   Escape HTML TRƯỚC, rồi xử lý: **bold**, `code`, ```khối code```,
-   link [text](url) / URL trần (target=_blank), heading in đậm. */
+/* ------------------- Minimal markdown -------------------
+   HTML is escaped FIRST, then: **bold**, `code`, ```code blocks```,
+   links [text](url) / bare URLs (target=_blank), headings rendered bold. */
 
 function renderInlineMd(s) {
   const stash = [];
   const keep = (html) => { stash.push(html); return `\u0001${stash.length - 1}\u0001`; };
 
-  // Inline code giữ token để bold/link không đụng vào nội dung
+  // Inline code is stashed behind a token so bold/link rules never touch its content
   s = s.replace(/`([^`\n]+)`/g, (m, code) => keep(`<code class="md-code">${code}</code>`));
   s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
@@ -96,11 +98,11 @@ function renderMarkdown(raw) {
   const stash = [];
   const keep = (html) => { stash.push(html); return `\u0000${stash.length - 1}\u0000`; };
 
-  // 1) Khối code ```...``` → token (nội dung đã escape, giữ nguyên)
+  // 1) Code blocks ```...``` -> token (content already escaped, kept as is)
   let text = esc.replace(/```[^\n]*\n?([\s\S]*?)```/g, (m, code) =>
     keep(`<pre class="md-pre"><code>${code.replace(/\n$/, "")}</code></pre>`));
 
-  // 2) Từng dòng: heading in đậm, danh sách gạch đầu dòng, đoạn văn
+  // 2) Line by line: bold headings, bullet lists, paragraphs
   const out = [];
   let list = null;
   const flushList = () => {
@@ -113,7 +115,7 @@ function renderMarkdown(raw) {
   for (const rawLine of text.split("\n")) {
     const line = rawLine.trim();
 
-    // Dòng là token khối code → đẩy nguyên, không bọc <p>
+    // A line that is a code-block token is emitted as is, not wrapped in <p>
     if (/^\u0000\d+\u0000$/.test(line)) { flushList(); out.push(line); continue; }
 
     const heading = line.match(/^(#{1,6})\s+(.+)$/);
@@ -133,23 +135,67 @@ function renderMarkdown(raw) {
   }
   flushList();
 
-  // 3) Phục hồi khối code từ token
+  // 3) Restore the code blocks from their tokens
   return out.join("\n").replace(/\u0000(\d+)\u0000/g, (m, i) => stash[Number(i)]);
 }
 
-/* ------------------- Lớp gọi API (cùng origin) ------------------- */
+/* ------------------- API layer (same origin) ------------------- */
+
+// The API key (AGENT_API_KEY on the server) is kept in sessionStorage only: it is
+// forgotten when the tab closes and never written to disk by this page.
+function getApiKey() {
+  try { return sessionStorage.getItem(KEY_STORAGE) || ""; } catch { return ""; }
+}
+
+function setApiKey(key) {
+  try {
+    if (key) sessionStorage.setItem(KEY_STORAGE, key);
+    else sessionStorage.removeItem(KEY_STORAGE);
+  } catch { /* storage unavailable: the key is asked again on the next 401 */ }
+}
+
+// Asks for the key once; returns false if the user cancels.
+function askApiKey(message) {
+  const key = (window.prompt(message) || "").trim();
+  if (!key) return false;
+  setApiKey(key);
+  return true;
+}
+
+// fetch() with the API key attached. A 401 means the key is missing or wrong: ask once and retry.
+async function apiFetch(url, options = {}) {
+  const send = () => {
+    const headers = { ...(options.headers || {}) };
+    const key = getApiKey();
+    if (key) headers[HDR_KEY] = key;
+    return fetch(url, { ...options, headers });
+  };
+  let res = await send();
+  if (res.status === 401) {
+    setApiKey("");
+    if (askApiKey("Máy chủ yêu cầu API key (header X-API-Key). Nhập API key:")) res = await send();
+  }
+  return res;
+}
+
+// Error text of a failed response; includes the request id the server logged, if any.
+function errorText(data, res) {
+  const text = (data && (data.error || data.message)) || `HTTP ${res.status}`;
+  const requestId = data && ((data.details && data.details.request_id) || data.request_id);
+  return requestId ? `${text} (${requestId})` : text;
+}
 
 async function requestJson(url, options = {}) {
   let res;
   try {
-    res = await fetch(url, options);
+    res = await apiFetch(url, options);
   } catch (e) {
     throw new Error(`không kết nối được server (${e.message})`);
   }
   let data = null;
-  try { data = await res.json(); } catch { /* body rỗng hoặc không phải JSON */ }
-  if (!res.ok) throw new Error((data && (data.error || data.message)) || `HTTP ${res.status}`);
-  if (data && data.status === "error") throw new Error(data.error || "Agent trả về lỗi.");
+  try { data = await res.json(); } catch { /* empty body or not JSON */ }
+  if (!res.ok) throw new Error(errorText(data, res));
+  if (data && data.status === "error") throw new Error(errorText(data, res));
   return data;
 }
 
@@ -167,9 +213,9 @@ function postInvocation(message) {
   });
 }
 
-/* ---------- Streaming SSE: POST /api/chat/stream ---------- */
+/* ---------- SSE streaming: POST /api/chat/stream ---------- */
 
-// Bong bóng live cho token stream (render text thô khi đang stream)
+// Live bubble for the token stream (plain text while streaming)
 function appendLiveBotBubble() {
   const wrap = document.createElement("div");
   wrap.className = "msg bot";
@@ -196,22 +242,34 @@ function appendLiveBotBubble() {
   return { wrap: wrap, bubble: bubble, body: body };
 }
 
-// Gọi stream; mỗi token → render dần; xong → markdown + callout như bubble thường
-async function postStream(message, typing) {
-  const res = await fetch(API.STREAM, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      [HDR_USER]: state.actor,
-      [HDR_SESSION]: state.session,
-    },
-    body: JSON.stringify({ message }),
-  });
+// The streaming endpoint cannot be used at all (missing route, or a proxy that does not
+// pass SSE). Only then does the caller fall back to POST /invocations. Any other failure
+// is shown as is: the server may already have processed the message, and a retry would run it twice.
+class StreamUnavailable extends Error {}
+
+// Calls the stream: each token is rendered as it arrives; when done, markdown + memory callout like a normal bubble
+async function postStream(message) {
+  let res;
+  try {
+    res = await apiFetch(API.STREAM, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [HDR_USER]: state.actor,
+        [HDR_SESSION]: state.session,
+      },
+      body: JSON.stringify({ message }),
+    });
+  } catch (e) {
+    throw new StreamUnavailable(e.message);
+  }
   const ct = res.headers.get("content-type") || "";
   if (!res.ok || !ct.includes("text/event-stream")) {
     let data = null;
-    try { data = await res.json(); } catch { /* không phải JSON */ }
-    throw new Error((data && (data.error || data.message)) || `HTTP ${res.status}`);
+    try { data = await res.json(); } catch { /* not JSON */ }
+    const message = errorText(data, res);
+    if (res.ok || res.status === 404 || res.status === 405) throw new StreamUnavailable(message);
+    throw new Error(message);
   }
 
   const live = appendLiveBotBubble();
@@ -248,7 +306,7 @@ async function postStream(message, typing) {
         if (memoriesUsed.length) live.body.appendChild(buildMemoryCallout(memoriesUsed));
         scrollToBottom();
       } else if (ev.type === "error") {
-        throw new Error(ev.error || "Lỗi stream.");
+        throw new Error(errorText(ev, res));
       }
     }
   }
@@ -256,7 +314,7 @@ async function postStream(message, typing) {
   return { status: "success", response: full, memories_used: memoriesUsed };
 }
 
-/* ------------------- Chat: bong bóng tin nhắn ------------------- */
+/* ------------------- Chat: message bubbles ------------------- */
 
 function scrollToBottom() {
   const box = $("chatMessages");
@@ -268,7 +326,7 @@ function appendBubble(role, text, memoriesUsed) {
   wrap.className = "msg " + (role === "user" ? "user" : "bot");
 
   if (role === "user") {
-    // Tin nhắn của user: bên phải, giữ nguyên text (textContent → an toàn)
+    // User message: on the right, plain text (textContent is safe)
     const bubble = document.createElement("div");
     bubble.className = "bubble";
     bubble.textContent = text;
@@ -288,7 +346,7 @@ function appendBubble(role, text, memoriesUsed) {
 
     const bubble = document.createElement("div");
     bubble.className = "bubble md";
-    bubble.innerHTML = renderMarkdown(text); // renderMarkdown tự escape trước
+    bubble.innerHTML = renderMarkdown(text); // renderMarkdown escapes first
 
     body.appendChild(name);
     body.appendChild(bubble);
@@ -336,7 +394,7 @@ function renderEmptyChat() {
     </div>`;
 }
 
-/* ------------------- Chỉ báo "đang gõ" (3 chấm + đồng hồ) ------------------- */
+/* ------------------- "Typing" indicator (3 dots + timer) ------------------- */
 
 function showTypingIndicator() {
   const wrap = document.createElement("div");
@@ -375,7 +433,7 @@ function showTypingIndicator() {
   return { wrap, stop: () => { clearInterval(timer); wrap.remove(); } };
 }
 
-/* ------------------- Trạng thái chat & chấm trạng thái ------------------- */
+/* ------------------- Chat state and status dot ------------------- */
 
 function clearChat() {
   state.viewToken += 1;
@@ -392,10 +450,15 @@ function setDot(kind) {
 
 async function loadInfo() {
   try {
-    const data = await getJson(API.INFO);
+    let data = await getJson(API.INFO);
+    // GET /api/info is public and only reports auth_required; with the key it also returns the details.
+    if (data.auth_required && !getApiKey()
+        && askApiKey("Máy chủ yêu cầu API key (header X-API-Key). Nhập API key:")) {
+      data = await getJson(API.INFO);
+    }
     state.info = data;
     $("infoAgent").textContent = data.agent || "—";
-    $("infoMemory").textContent = String(data.memory_id || "—").slice(0, 8); // memory_id rút gọn 8 ký tự
+    $("infoMemory").textContent = String(data.memory_id || "—").slice(0, 8); // memory id shortened to 8 characters
     $("infoModel").textContent = data.llm_model || "—";
     $("infoGateway").textContent = truncate(data.gateway || data.mcp_url || "—", 30);
     setDot("ok");
@@ -405,9 +468,9 @@ async function loadInfo() {
   }
 }
 
-/* ------------------- Người dùng & phiên (GET /api/actors) ------------------- */
+/* ------------------- Users and sessions (GET /api/actors) ------------------- */
 
-// Gộp danh sách actor từ server với các actor/phiên tạo cục bộ (chưa sync)
+// Merge the server's actor list with actors/sessions created locally (not synced yet)
 function mergeActors(remoteActors) {
   const byId = new Map();
   for (const a of remoteActors) {
@@ -508,7 +571,7 @@ function selectUser(actorId) {
   updateChips();
   clearChat();
   loadHistory();
-  loadMemory(); // tự làm mới bộ nhớ khi đổi user
+  loadMemory(); // refresh the memory panel when the user changes
 }
 
 function selectSession(sessionId) {
@@ -520,7 +583,7 @@ function selectSession(sessionId) {
   loadMemory();
 }
 
-// "+ Người dùng mới": input → slug chữ thường, chọn ngay
+// "New user": the input becomes a lowercase slug and is selected right away
 function createUser() {
   const input = $("newUserInput");
   const slug = slugify(input.value);
@@ -535,7 +598,7 @@ function createUser() {
   selectUser(slug);
 }
 
-// "+ Phiên mới": id = "s-" + timestamp
+// "New session": id = "s-" + timestamp
 function createSession() {
   if (!state.actor) {
     showToast("Hãy chọn hoặc tạo người dùng trước.");
@@ -563,14 +626,14 @@ async function loadActors() {
   }
 }
 
-// Làm mới danh sách actor sau khi agent trả lời (không đổi lựa chọn)
+// Refresh the actor list after the agent replied (the selection does not change)
 async function refreshActorsSilently() {
   try {
     const data = await getJson(API.ACTORS);
     mergeActors(Array.isArray(data.actors) ? data.actors : []);
     renderUsers();
     renderSessions();
-  } catch { /* im lặng — không làm phiền người dùng */ }
+  } catch { /* silent: not worth bothering the user */ }
 }
 
 /* ------------------- GET /api/history ------------------- */
@@ -585,7 +648,7 @@ async function loadHistory() {
     const data = await getJson(
       `${API.HISTORY}?actor=${encodeURIComponent(state.actor)}&session=${encodeURIComponent(state.session)}`
     );
-    if (token !== state.viewToken) return; // đã đổi phiên trong lúc chờ
+    if (token !== state.viewToken) return; // the session changed while waiting
     const events = Array.isArray(data.events) ? data.events : [];
     if (!events.length) {
       renderEmptyChat();
@@ -601,7 +664,7 @@ async function loadHistory() {
   }
 }
 
-/* ------------------- Gửi tin nhắn → POST /invocations ------------------- */
+/* ------------------- Sending a message ------------------- */
 
 async function sendMessage() {
   const input = $("composerInput");
@@ -623,12 +686,13 @@ async function sendMessage() {
   const typing = showTypingIndicator();
 
   try {
-    // ① Thử streaming SSE — token render dần trong bong bóng live
+    // 1) Try SSE streaming: tokens render as they arrive in a live bubble
     let data;
     try {
-      data = await postStream(text, typing);
+      data = await postStream(text);
     } catch (streamErr) {
-      // ② Streaming không khả dụng (404/401/lỗi mạng) → fallback /invocations
+      if (!(streamErr instanceof StreamUnavailable)) throw streamErr;
+      // 2) Streaming is not available: fall back to POST /invocations
       const fallback = await postInvocation(text);
       if (!fallback || fallback.status !== "success") {
         throw new Error((fallback && fallback.error) || streamErr.message || "Agent trả về lỗi.");
@@ -640,8 +704,8 @@ async function sendMessage() {
       throw new Error((data && data.error) || "Agent trả về lỗi.");
     }
     setDot("ok");
-    loadMemory();            // tự làm mới bộ nhớ sau mỗi câu trả lời của bot
-    refreshActorsSilently(); // actor/phiên mới có thể xuất hiện trên server
+    loadMemory();            // refresh the memory panel after every bot reply
+    refreshActorsSilently(); // new actors/sessions may now exist on the server
   } catch (e) {
     typing.stop();
     setDot("err");
@@ -654,9 +718,9 @@ async function sendMessage() {
   }
 }
 
-/* ------------------- Panel "Bộ nhớ" → GET /api/memory ------------------- */
+/* ------------------- "Memory" panel (GET /api/memory) ------------------- */
 
-// Tên nhóm: map strategy_id/strategy → tiêu đề tiếng Việt, fallback tên gốc
+// Group title: maps strategy id/name to a Vietnamese title, falling back to the raw name
 function strategyTitle(group) {
   const sid = String(group.strategy_id || "").toLowerCase();
   const sname = String(group.strategy || "");
@@ -675,7 +739,7 @@ function buildGroupCard(group) {
   title.textContent = strategyTitle(group);
   sec.appendChild(title);
 
-  // Lỗi của nhóm → ghi chú đỏ
+  // A group error is shown as a red note
   if (group.error) {
     const err = document.createElement("div");
     err.className = "mem-group-error";
@@ -722,7 +786,7 @@ async function loadMemory() {
   body.innerHTML = '<div class="mem-loading">Đang tải bộ nhớ…</div>';
   try {
     const data = await getJson(`${API.MEMORY}?actor=${encodeURIComponent(state.actor)}`);
-    if (token !== memoryToken) return; // đã đổi user trong lúc chờ
+    if (token !== memoryToken) return; // the user changed while waiting
     const groups = Array.isArray(data.groups) ? data.groups : [];
     body.innerHTML = "";
     if (!groups.length) {
@@ -736,7 +800,7 @@ async function loadMemory() {
   loadRecent();
 }
 
-/* ------------------- "Hội thoại gần đây" (5 sự kiện cuối) ------------------- */
+/* ------------------- "Recent conversation" (last 5 events) ------------------- */
 
 function renderRecent(events) {
   const box = $("recentList");
@@ -753,7 +817,7 @@ function renderRecent(events) {
     role.textContent = ev.role === "user" ? "Bạn" : "Travel Buddy";
     const msg = document.createElement("span");
     msg.className = "recent-msg";
-    msg.textContent = truncate(ev.message || "", 80); // cắt 80 ký tự
+    msg.textContent = truncate(ev.message || "", 80); // cut at 80 characters
     item.appendChild(role);
     item.appendChild(msg);
     box.appendChild(item);
@@ -770,13 +834,13 @@ async function loadRecent() {
       `${API.HISTORY}?actor=${encodeURIComponent(state.actor)}&session=${encodeURIComponent(state.session)}`
     );
     const events = Array.isArray(data.events) ? data.events : [];
-    renderRecent(events.slice(-5).reverse()); // mới nhất lên đầu
+    renderRecent(events.slice(-5).reverse()); // newest first
   } catch {
     $("recentList").innerHTML = '<div class="recent-empty">Không tải được hội thoại gần đây.</div>';
   }
 }
 
-/* ------------------- Toast lỗi (tự ẩn, đóng được) ------------------- */
+/* ------------------- Error toast (auto-hides, dismissible) ------------------- */
 
 let toastTimer = null;
 
@@ -788,7 +852,7 @@ function showToast(message) {
   toastTimer = setTimeout(() => toast.classList.remove("show"), 6000);
 }
 
-/* ------------------- Composer (textarea tự giãn) ------------------- */
+/* ------------------- Composer (auto-growing textarea) ------------------- */
 
 function autosizeComposer() {
   const el = $("composerInput");
@@ -796,7 +860,7 @@ function autosizeComposer() {
   el.style.height = Math.min(el.scrollHeight, 160) + "px";
 }
 
-/* ------------------- Gắn sự kiện & khởi động ------------------- */
+/* ------------------- Event binding and startup ------------------- */
 
 function bindEvents() {
   $("sendBtn").addEventListener("click", sendMessage);
@@ -804,7 +868,7 @@ function bindEvents() {
   const composer = $("composerInput");
   composer.addEventListener("input", autosizeComposer);
   composer.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { // Enter gửi, Shift+Enter xuống dòng
+    if (e.key === "Enter" && !e.shiftKey) { // Enter sends, Shift+Enter inserts a newline
       e.preventDefault();
       sendMessage();
     }
@@ -818,7 +882,7 @@ function bindEvents() {
   $("newSessionBtn").addEventListener("click", createSession);
   $("memoryRefreshBtn").addEventListener("click", loadMemory);
 
-  // Panel "Bộ nhớ" mở/thu trên màn hình hẹp
+  // The memory panel opens/closes on narrow screens
   $("memoryToggle").addEventListener("click", () => $("layout").classList.toggle("show-memory"));
   $("panelClose").addEventListener("click", () => $("layout").classList.remove("show-memory"));
 
