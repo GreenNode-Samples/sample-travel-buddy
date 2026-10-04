@@ -21,6 +21,10 @@ Model (GreenNode AgentBase documentation):
     through the private connection.
   - LLM calls are a separate path: directly to the AI Platform or through the Sidecar LLM Proxy (localhost:18080).
 
+Drawing rules: every arrow is a straight line or makes a single right-angle turn (no zig-zags). Nodes on one
+request path share a row or a column; the MCP Gateway is drawn as a one-row pipeline (Inbound Auth -> Policy
+Group -> connectors) so the caller's tools/call arrow is straight; fan-in / fan-out uses a bus.
+
 Run:  python3 docs/network/build_diagrams.py
 """
 import html as H
@@ -180,8 +184,17 @@ def lbl_right(x, y, name, sub=()):
     return out
 
 
+def lbl_topright(x, y, name, sub=()):
+    """Label to the right of the icon, above its centre line, so an arrow can leave the icon to the right."""
+    out = text(x + 60, y + 2, name, 12, 700)
+    for i, s in enumerate(sub if isinstance(sub, (list, tuple)) else [sub]):
+        out += text(x + 60, y + 15 + i * 13, s, 10.5, 400, SLATE)
+    return out
+
+
 def node(x, y, glyph, color, name, sub=(), side="below", badge=None):
-    return icon(x, y, glyph, color, badge) + (lbl_below(x, y, name, sub) if side == "below" else lbl_right(x, y, name, sub))
+    lbl = {"below": lbl_below, "right": lbl_right, "topright": lbl_topright}[side]
+    return icon(x, y, glyph, color, badge) + lbl(x, y, name, sub)
 
 
 def people(x, y):
@@ -381,30 +394,36 @@ CONNECTORS = {
 }
 
 
-def gateway_block(s, names, network, title, x=680, y=236):
-    """MCP Gateway (managed by GreenNode): Inbound Auth -> Policy Group -> MCP Connectors."""
-    w, h = 450, 304
-    s.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="#F8F7FC" stroke="{C["net"]}" stroke-width="1.5"/>')
-    s.append(f'<rect x="{x}" y="{y}" width="26" height="26" fill="#FFFFFF" stroke="{C["net"]}" stroke-width="1.5"/>'
-             + use("mcp-gateway", x + 4, y + 4, 18))
-    s.append(text(x + 34, y + 18, title, 12.5, 700, C["net"]))
-    s.append(text(x + w - 10, y + 18, "MCP Connectors", 11, 700, INK, "end"))
-    s.append(node(x + 26, y + 40, "inbound-auth", C["net"], "Inbound Auth", ["IAM Permissions", "JWT (default)"]))
-    s.append(node(x + 26, y + 170, "policy", C["idc"], "Policy Group", ["ALLOW / DENY"]))
-    s.append(arrow([(x + 50, y + 138), (x + 50, y + 170)], "req"))
-    s.append(text(x + 12, y + h - 10, network, 10.5, 600, C["net"]))
-    mids = {}
-    for i, n in enumerate(names):
-        url, auth = CONNECTORS[n]
-        cy = y + 26 + i * 62
-        s.append(connector(x + 120, cy, n, url, auth))
-        mids[n] = cy + 28
-    bus = x + 106
-    s.append(f'<polyline points="{x+74},{y+194} {bus},{y+194}" fill="none" stroke="{INK}" stroke-width="1.6"/>')
-    lo, hi = min(list(mids.values()) + [y + 194]), max(list(mids.values()) + [y + 194])
-    s.append(f'<polyline points="{bus},{lo} {bus},{hi}" fill="none" stroke="{INK}" stroke-width="1.6"/>')
-    for m in mids.values():
-        s.append(arrow([(bus, m), (x + 120, m)], "req"))
+def gateway_pipeline(s, x, row, names, network, title, w=490):
+    """MCP Gateway (managed by GreenNode) drawn as a pipeline on one row: Inbound Auth -> Policy Group -> MCP Connectors.
+    The caller's tools/call arrow ends at (x + 24, row), so it is a straight line when the caller sits on the same row.
+    Connectors fan out symmetrically around the row (connector i of n has its centre at row + (i - (n-1)/2) * 62).
+    Returns {connector name: centre y}; every connector's right edge is at x + w - 10."""
+    n = len(names)
+    mids = {nm: int(row + (i - (n - 1) / 2) * 62) for i, nm in enumerate(names)}
+    top = min(mids.values()) - 28 - 38
+    h = max(max(mids.values()) + 28, row + 58) + 30 - top
+    s.append(f'<rect x="{x}" y="{top}" width="{w}" height="{h}" fill="#F8F7FC" stroke="{C["net"]}" stroke-width="1.5"/>')
+    s.append(f'<rect x="{x}" y="{top}" width="26" height="26" fill="#FFFFFF" stroke="{C["net"]}" stroke-width="1.5"/>'
+             + use("mcp-gateway", x + 4, top + 4, 18))
+    s.append(text(x + 34, top + 18, title, 12.5, 700, C["net"]))
+    s.append(text(x + w - 10, top + 18, "MCP Connectors", 11, 700, INK, "end"))
+    s.append(node(x + 24, row - 24, "inbound-auth", C["net"], "Inbound Auth", ["IAM · JWT"]))
+    s.append(node(x + 124, row - 24, "policy", C["idc"], "Policy Group", ["ALLOW / DENY"]))
+    s.append(arrow([(x + 72, row), (x + 124, row)], "req"))
+    cx, bus = x + 212, x + 196
+    if n == 1:
+        s.append(arrow([(x + 172, row), (cx, row)], "req"))
+    else:
+        s.append(line([(x + 172, row), (bus, row)]))
+        lo, hi = min(list(mids.values()) + [row]), max(list(mids.values()) + [row])
+        s.append(f'<polyline points="{bus},{lo} {bus},{hi}" fill="none" stroke="{INK}" stroke-width="1.6"/>')
+        for m in mids.values():
+            s.append(arrow([(bus, m), (cx, m)], "req"))
+    for nm, m in mids.items():
+        url, auth = CONNECTORS[nm]
+        s.append(connector(cx, m - 28, nm.split("@")[0], url, auth, w=w - 222))
+    s.append(text(x + 12, top + h - 10, network, 10.5, 600, C["net"]))
     return mids
 
 
@@ -448,126 +467,108 @@ def gateway_compact(s, x, y, title, names, network):
 
 
 # ═════════════════════════ shared scene for 01 / 03 / 04 ═══════════════════════
-def scene(show, conns, title, two_gw=False):
+# Cross layout around the Agent Runtime, so every arrow is straight or turns once:
+#   vCR -> Runtime from the left · Runtime -> shared services above (trunk + bus) · internal app -> Runtime from below
+#   · Runtime -> MCP Gateway on the same row · each connector leaves to the right and turns once: up to the Internet
+#   or to an MCP server on Agent Runtime, down into the customer VPC or to the VPN GW. A connector higher in the
+#   gateway that turns down uses a column further right, so no two arrows cross.
+def scene(show, conns, title):
     has = lambda k: k in show
-    # two_gw: split the connectors over a Public and a Private gateway (kept for reference; diagrams use one gateway)
-    DY = 80 if two_gw else 0                 # with two gateways everything under the AgentBase VPC moves down
-    SH = 0 if two_gw else 40                 # one gateway: room between Shared services and the AgentBase VPC
-    RY = 520 + SH                            # top of the Agent Runtime tile
-    W = 1680 if has("onprem") else 1350
+    W = 1760 if has("onprem") else 1440
     top = 0 if has("internet") else 110
-    Hh = 1340 + DY + SH - top
+    ROW, GX, L = 610, 600, 830               # Runtime / gateway row · gateway left edge · top of the customer VPC
+    RX = 420                                 # Agent Runtime and internal app column (icon left edge)
+    XA, XS, XC, XI, XE = 1120, 1220, 1150, 1270, 1300   # columns: Internet · hosted MCP · crm · inventory · VPN GW
+    Hh = L + 520 - top
     s = []
     if has("internet"):
         s.append(group(20, 16, W - 40, 94, "Internet", "internet"))
         s.append(node(130, 40, "registry", C["gray"], "Public registry", ["alternative to vCR (opt-in)", "Docker Hub · GHCR …"], "right"))
-        s.append(node(1330, 40, "mcp", C["mcp"], "MCP servers on the Internet", ["Tavily · GitHub · Slack …"], "right"))
+        s.append(node(XA - 24, 40, "mcp", C["mcp"], "MCP servers on the Internet", ["Tavily · GitHub · Slack …"], "right"))
 
-    s.append(group(20, 130, 1320, 1170 + DY + SH, "GreenNode Cloud", "cloud"))
-    s.append(group(34, 166, 1292, 1120 + DY + SH, "Region HCM", "region"))
-    s.append(group(50, 200, 1260, (670 if two_gw else 600), "AgentBase Platform — managed by GreenNode", "managed"))
-    s.append(node(90, 250, "gn-cr", C["compute"], "Container Registry", ["vCR"]))
+    s.append(group(20, 130, 1390, L + 340, "GreenNode Cloud", "cloud"))
+    s.append(group(34, 166, 1362, L + 290, "Region HCM", "region"))
+    s.append(group(50, 200, 1330, 590, "AgentBase Platform — managed by GreenNode", "managed"))
     svc = shared_services(s, 180, 236, 460)
-    # the Public gateway is AgentBase's shared public endpoint, so it is drawn outside the AgentBase VPC
-    s.append(abvpc(70, 450, 1220, 410) if two_gw else abvpc(70, 440, 1220, 350))
-    s.append(node(400, RY, "agent-runtime", C["compute"], "Agent Runtime", ["sidecar LLM :18080"]))
-    private_net = ("Network: Private · Route CIDRs = on-prem CIDR" if has("onprem")
-                   else "Network: Private → customer VPC")
-    if two_gw:
-        mids = gateway_compact(s, 680, 236, "MCP Gateway · Public", [n for n in conns if n in ("tavily", "stock")],
-                               "Network: Public (shared public endpoint)")
-        mids.update(gateway_compact(s, 680, 636, "MCP Gateway · Private",
-                                    [n for n in conns if n not in ("tavily", "stock")], private_net))
-        gw_entries = [294, 694]
-    else:
-        mids = gateway_block(s, conns, private_net, "MCP Gateway · Private", y=420 + SH)
-        gw_entries = [484 + SH]
+    s.append(abvpc(190, 420, 1170, 350))
+    s.append(node(90, ROW - 24, "gn-cr", C["compute"], "Container Registry", ["vCR"]))
+    s.append(node(RX, ROW - 24, "agent-runtime", C["compute"], "Agent Runtime", ["sidecar LLM :18080"], "topright"))
+    net = "Network: Private · Route CIDRs = on-prem CIDR" if has("onprem") else "Network: Private → customer VPC"
+    mids = gateway_pipeline(s, GX, ROW, conns, net, "MCP Gateway · Private")
     if has("hosted"):
-        s.append(node(1156, mids["stock"] - 24, "mcp", C["mcp"], "MCP server", ["on Agent Runtime"]))
+        s.append(node(XS - 24, 300, "mcp", C["mcp"], "MCP server", ["on Agent Runtime"], "right"))
 
-    L = 830 + DY + SH                        # top of the customer VPC
-    s.append(group(50, L, 1260, 440, "Customer VPC · xx.xx.x.x/xx", "vpc"))
+    s.append(group(50, L, 1330, 440, "Customer VPC · xx.xx.x.x/xx", "vpc"))
     s.append(group(70, L + 40, 450, 150, "Private subnet · app", "private"))
-    s.append(node(300, L + 80, "app", C["app"], "Internal app", ["customer internal system"]))
+    s.append(node(RX, L + 80, "app", C["app"], "Internal app", ["customer internal system"]))
     rows = [("xx.xx.x.x/xx", "local (VPC)"), ("172.30.0.0/16", "→ AgentBase (private)")]
     if has("onprem"):
         rows += [("xx.xx.x.x/xx", "on-prem → VPN GW / Interconnect")]
     s.append(card(70, L + 220, 450, 30 + 17 * len(rows) + 10, "Route table (customer VPC)", rows))
     if has("vpcmcp"):
-        s.append(group(760, L + 40, 330, 270, "Private subnet · MCP", "private"))
-        s.append(node(960, L + 100, "mcp", C["mcp"], "mcp-crm", ["vServer"], badge="gn-server"))
-        s.append(node(800, L + 200, "gn-vdb", C["db"], "vDB", ["database"]))
+        s.append(group(900, L + 40, 420 if "inventory" in conns else 360, 200, "Private subnet · MCP", "private"))
+        s.append(node(940, L + 100, "gn-vdb", C["db"], "vDB", ["database"]))
+        s.append(node(XC - 24, L + 100, "mcp", C["mcp"], "mcp-crm", ["vServer"], badge="gn-server"))
         if "inventory" in conns:
-            s.append(node(960, L + 200, "mcp", C["mcp"], "mcp-inventory", ["VKS"], badge="gn-vks"))
+            s.append(node(XI - 24, L + 100, "mcp", C["mcp"], "mcp-inventory", ["VKS"], badge="gn-vks"))
     if has("onprem"):
-        s.append(node(1231, L + 300, "gn-vnet", C["net"], "VPN GW", ["/ Interconnect"]))
-        s.append(group(1370, L, 290, 440, "On-premises · xx.xx.x.x/xx", "onprem"))
-        s.append(node(1420, L + 300, "firewall", C["gray"], "Firewall",
-                      ["allow + return route", "VPC CIDR · 172.30.0.0/16"]))
-        s.append(node(1570, L + 190, "mcp", C["mcp"], "mcp-erp", ["xx.xx.x.x"]))
+        s.append(node(XE - 24, L + 300, "gn-vnet", C["net"], "VPN GW", ["/ Interconnect"]))
+        s.append(group(1430, L, 310, 440, "On-premises · xx.xx.x.x/xx", "onprem"))
+        s.append(node(1480, L + 300, "firewall", C["gray"], "Firewall", ["allow + return route", "VPC CIDR · 172.30.0.0/16"]))
+        s.append(node(1640, L + 300, "mcp", C["mcp"], "mcp-erp" if "hr" not in conns else "mcp-hr", ["xx.xx.x.x"]))
         if "hr" in conns:
-            s.append(node(1570, L + 340, "mcp", C["mcp"], "mcp-hr", ["xx.xx.x.x"]))
+            s.append(node(1640, L + 150, "mcp", C["mcp"], "mcp-erp", ["xx.xx.x.x"]))
 
-    # ── flows: no line crosses a group title or a label ──
+    # ── flows: straight, or one right-angle turn ──
     steps = []
-    # 1 · an internal app invokes the agent over the private connection
-    s.append(arrow([(324, L + 80), (324, RY + 36), (400, RY + 36)], "req", ["invoke", "(private)"], (334, RY + 180), "start"))
-    steps.append([(324, RY + 130)])
-    # the image is pulled at deploy time, not per request, so this arrow has no step number
-    s.append(arrow([(114, 345), (114, 418), (412, 418), (412, RY)], "req", "pull image (at deploy)", (240, 412)))
-    # 2 · Agent -> LLM, Memory and Access Control, one arrow per service
-    bus = 386
-    to_services(s, [(436, RY), (436, bus)], bus, [svc["llm"], svc["memory"], svc["ac"]], 236 + SVC_TIP)
-    ly = 410 if two_gw else 470
-    s.append(text(446, ly, "LLM (direct or sidecar :18080)", 10.5, 600, INK, "start", halo=True)
-             + text(446, ly + 13, "Memory · Access Control", 10.5, 600, INK, "start", halo=True))
-    steps.append([(436, RY - 30)])
-    # 3 · MCP tools/call -> gateway(s)
-    if two_gw:
-        s.append(f'<polyline points="448,{RY + 24} 660,{RY + 24}" fill="none" stroke="{INK}" stroke-width="1.6"/>')
-        s.append(f'<polyline points="660,{gw_entries[0]} 660,{gw_entries[1]}" fill="none" stroke="{INK}" stroke-width="1.6"/>')
-        for ey in gw_entries:
-            s.append(arrow([(660, ey), (694, ey)], "req"))
-        s.append(text(554, RY + 16, "MCP tools/call", 10.5, 600, INK, "middle", halo=True))
-        steps.append([(660, 600)])
-    else:
-        s.append(arrow([(448, RY + 24), (660, RY + 24), (660, gw_entries[0]), (706, gw_entries[0])], "req",
-                       ["MCP tools/call"], (554, RY + 16)))
-        steps.append([(660, gw_entries[0] + 36)])
+    s.append(arrow([(138, ROW), (RX, ROW)], "req", ["pull image", "(at deploy)"], ((138 + RX) // 2, ROW - 22)))
+    # 1 · the internal app invokes the agent over the private connection, straight up
+    s.append(arrow([(RX + 24, L + 80), (RX + 24, ROW + 24)], "req", ["invoke", "(private)"], (RX + 34, 700), "start"))
+    steps.append([(RX + 24, 810)])
+    # 2 · Agent -> LLM, Memory and Access Control: trunk up, one arrow per service
+    to_services(s, [(RX + 24, ROW - 24), (RX + 24, 400)], 400, [svc["llm"], svc["memory"], svc["ac"]], 236 + SVC_TIP)
+    s.append(text(RX + 14, 480, "LLM (direct or sidecar :18080)", 10.5, 600, INK, "end", halo=True)
+             + text(RX + 14, 493, "Memory · Access Control", 10.5, 600, INK, "end", halo=True))
+    steps.append([(RX + 24, 510)])
+    # 3 · MCP tools/call, on the Runtime's row
+    s.append(arrow([(RX + 48, ROW), (GX + 24, ROW)], "req", "MCP tools/call", ((RX + 48 + GX) // 2, ROW + 18)))
+    steps.append([(GX - 12, ROW)])
+    out = GX + 480                           # right edge of every connector
     if has("internet"):
         t = mids["tavily"]
-        s.append(arrow([(1120, t), (1150, t), (1150, 64), (1330, 64)], "req"))
-        steps.append([(1150, 300)])
+        s.append(arrow([(out, t), (XA, t), (XA, 88)], "req"))
+        steps.append([(XA, 300)])
     if has("hosted"):
         st = mids["stock"]
-        s.append(arrow([(1120, st), (1156, st)], "req"))
-        steps.append([(1138, st)])
+        s.append(arrow([(out, st), (XS, st), (XS, 348)], "req"))
+        steps.append([(XS, 470)])
     if has("vpcmcp"):
         c = mids["crm"]
-        s.append(arrow([(1120, c), (1240, c), (1240, L + 124), (1008, L + 124)], "req"))
-        s.append(arrow([(960, L + 124), (824, L + 124), (824, L + 200)], "req"))
-        badges = [(1240, L + 40)]
+        s.append(arrow([(out, c), (XC, c), (XC, L + 100)], "req"))
+        s.append(arrow([(XC - 24, L + 124), (988, L + 124)], "req"))
+        s.append(text(XC + 10, L + 66, "private IP", 10.5, 600, INK, "start", halo=True))
+        badges = [(XC, 810)]
         if "inventory" in conns:
             iv = mids["inventory"]
-            s.append(arrow([(1120, iv), (1255, iv), (1255, L + 224), (1008, L + 224)], "req"))
-            s.append(arrow([(960, L + 224), (848, L + 224)], "req"))
-            badges.append((1255, L + 170))
-        s.append(text(1120, L + 116, "private IP", 10.5, 600, INK, "middle", halo=True))
+            s.append(arrow([(out, iv), (XI, iv), (XI, L + 100)], "req"))
+            badges.append((XI, 810))
         steps.append(badges)
     if has("onprem"):
-        e = mids["erp"]
-        s.append(arrow([(1120, e), (1265, e), (1265, L + 300)], "req"))
-        badges = [(1265, L + 230)]
+        if "hr" in conns:                    # two parallel arrows into the VPN GW: the higher connector lands further right
+            e, h_ = mids["erp"], mids["hr"]
+            s.append(arrow([(out, e), (XE + 12, e), (XE + 12, L + 300)], "req"))
+            s.append(arrow([(out, h_), (XE - 12, h_), (XE - 12, L + 300)], "req"))
+            steps.append([(XE + 12, 770), (XE - 12, 810)])
+        else:
+            e = mids["erp"]
+            s.append(arrow([(out, e), (XE, e), (XE, L + 300)], "req"))
+            steps.append([(XE, 810)])
+        s.append(arrow([(XE + 24, L + 314), (1480, L + 314)], "dx", both=True))
+        s.append(arrow([(XE + 24, L + 334), (1480, L + 334)], "vpn", both=True))
+        s.append(arrow([(1528, L + 324), (1640, L + 324)], "req"))
         if "hr" in conns:
-            h_ = mids["hr"]
-            s.append(arrow([(1120, h_), (1245, h_), (1245, L + 300)], "req"))
-            badges.append((1245, L + 150))
-        s.append(arrow([(1279, L + 316), (1420, L + 316)], "dx", both=True))
-        s.append(arrow([(1279, L + 332), (1420, L + 332)], "vpn", both=True))
-        s.append(arrow([(1468, L + 316), (1520, L + 316), (1520, L + 214), (1570, L + 214)], "req"))
-        if "hr" in conns:
-            s.append(arrow([(1468, L + 332), (1520, L + 332), (1520, L + 364), (1570, L + 364)], "req"))
-        steps.append(badges)
+            s.append(line([(1584, L + 324), (1584, L + 174)]))
+            s.append(arrow([(1584, L + 174), (1640, L + 174)], "req"))
     s.append(steps_svg(steps))
 
     lg = [("req", "request / data path")]
@@ -596,24 +597,22 @@ def d3():
 # ═════════════════════════ Public use case: Agent Runtime in PUBLIC mode ═══════════
 # Internet users call the Runtime's public endpoint; the gateway is Public; MCP on the Internet and on AgentBase.
 def d_public():
-    OX = 70                                  # gutter on the left for the users -> Runtime arrow
-    W, Hh = 1430 + OX, 800
+    W, Hh, ROW = 1500, 880, 560
+    RX, GX = 390, 680                        # Agent Runtime icon left edge · gateway left edge
     s = []
-    # one Internet band on top: users / apps and the MCP servers on the Internet
+    # one Internet band on top: users / apps straight above the Runtime, MCP servers on the Internet on the right
     s.append(group(20, 16, W - 40, 94, "Internet", "internet"))
-    s.append(people(40, 40) + lbl_right(40, 40, "Users / apps", ["browser · webhook · A2A client"]))
-
-    b = []
-    b.append(node(1140, 40, "mcp", C["mcp"], "MCP servers on the Internet", ["Tavily · GitHub · Slack …"], "right"))
-    b.append(group(20, 130, 1240, 630, "GreenNode Cloud", "cloud"))
-    b.append(group(34, 166, 1212, 580, "Region HCM", "region"))
-    b.append(group(50, 200, 1180, 530, "AgentBase Platform — managed by GreenNode", "managed"))
-    b.append(node(90, 260, "gn-cr", C["compute"], "Container Registry", ["vCR"]))
-    svc = shared_services(b, 180, 236, 460)
-    mids = gateway_block(b, ["tavily", "github", "stock"], "Network: Public", "MCP Gateway · Public")
-    b.append(node(1160, mids["stock"] - 24, "mcp", C["mcp"], "MCP server", ["on Agent Runtime"]))
-    b.append(node(300, 600, "agent-runtime", C["compute"], "Agent Runtime", ["PUBLIC mode · sidecar LLM :18080"]))
-    b.append(card(700, 580, 430, 130, "PUBLIC mode", [
+    s.append(people(RX, 36) + lbl_right(RX, 36, "Users / apps", ["browser · webhook · A2A client"]))
+    s.append(node(1188, 40, "mcp", C["mcp"], "MCP servers on the Internet", ["Tavily · GitHub · Slack …"], "right"))
+    s.append(group(20, 130, 1360, 710, "GreenNode Cloud", "cloud"))
+    s.append(group(34, 166, 1332, 660, "Region HCM", "region"))
+    s.append(group(50, 200, 1300, 610, "AgentBase Platform — managed by GreenNode", "managed"))
+    svc = shared_services(s, 480, 236, 460)
+    s.append(node(90, ROW - 24, "gn-cr", C["compute"], "Container Registry", ["vCR"]))
+    s.append(node(RX, ROW - 24, "agent-runtime", C["compute"], "Agent Runtime", ["PUBLIC mode · sidecar LLM :18080"], "topright"))
+    mids = gateway_pipeline(s, GX, ROW, ["tavily", "github", "stock"], "Network: Public", "MCP Gateway · Public")
+    s.append(node(1260, mids["stock"] - 24, "mcp", C["mcp"], "MCP server", ["on Agent Runtime"]))
+    s.append(card(70, 650, 430, 130, "PUBLIC mode", [
         ("Runtime endpoint", "public HTTPS (IAM / JWT)"),
         ("Gateway network", "Public"),
         ("VPC / on-prem", "not required"),
@@ -621,27 +620,29 @@ def d_public():
     ]))
 
     steps = []
+    # 1 · users -> the Runtime's public endpoint, straight down
+    s.append(arrow([(RX + 12, 88), (RX + 12, ROW - 24)], "req", ["HTTPS", "public endpoint"], (RX + 2, 300), "end"))
+    steps.append([(RX + 12, 360)])
     # the image is pulled at deploy time: no step number
-    b.append(arrow([(114, 345), (114, 580), (312, 580), (312, 600)], "req", "pull image (at deploy)", (124, 440), "start"))
+    s.append(arrow([(138, ROW), (RX, ROW)], "req", ["pull image", "(at deploy)"], (264, ROW - 22)))
     # 2 · Agent -> LLM, Memory and Access Control, one arrow per service
-    to_services(b, [(336, 600), (336, 390)], 390, [svc["llm"], svc["memory"], svc["ac"]], 236 + SVC_TIP)
-    b.append(text(346, 450, "LLM (direct or sidecar :18080)", 10.5, 600, INK, "start", halo=True)
-             + text(346, 463, "Memory · Access Control", 10.5, 600, INK, "start", halo=True))
-    steps.append([(336, 520)])
-    b.append(arrow([(348, 624), (660, 624), (660, 300), (706, 300)], "req", ["MCP tools/call", "→ MCP Gateway"], (650, 560), "end"))
-    steps.append([(660, 600)])
-    b.append(arrow([(1120, mids["tavily"]), (1150, mids["tavily"]), (1150, 88)], "req"))
-    steps.append([(1150, 200)])
-    b.append(arrow([(1120, mids["github"]), (1170, mids["github"]), (1170, 88)], "req"))
-    steps.append([(1170, 260)])
-    b.append(arrow([(1120, mids["stock"]), (1160, mids["stock"])], "req"))
-    steps.append([(1142, mids["stock"] + 22)])
-
-    s.append(f'<g transform="translate({OX} 0)">{"".join(b)}</g>')
-    # 1 · users -> the Runtime's public endpoint (absolute coordinates)
-    s.append(arrow([(64, 90), (64, 624), (OX + 300 - PAD, 624)], "req", "HTTPS · public endpoint", (OX + 160, 616)))
-    s.append(step(OX + 160, 640, 1))
-    s.append(f'<g transform="translate({OX} 0)">{steps_svg(steps, 2)}</g>')
+    to_services(s, [(RX + 36, ROW - 24), (RX + 36, 400)], 400, [svc["llm"], svc["memory"], svc["ac"]], 236 + SVC_TIP)
+    s.append(text(RX + 46, 456, "LLM (direct or sidecar :18080)", 10.5, 600, INK, "start", halo=True)
+             + text(RX + 46, 469, "Memory · Access Control", 10.5, 600, INK, "start", halo=True))
+    steps.append([(RX + 36, 500)])
+    # 3 · MCP tools/call, on the Runtime's row
+    s.append(arrow([(RX + 48, ROW), (GX + 24, ROW)], "req", "MCP tools/call", ((RX + 48 + GX) // 2, ROW + 18)))
+    steps.append([(GX - 12, ROW)])
+    out = GX + 480
+    # 4, 5 · Internet connectors turn up once; the lower one uses the column further right
+    s.append(arrow([(out, mids["tavily"]), (1200, mids["tavily"]), (1200, 88)], "req"))
+    steps.append([(1200, 300)])
+    s.append(arrow([(out, mids["github"]), (1224, mids["github"]), (1224, 88)], "req"))
+    steps.append([(1224, 360)])
+    # 6 · MCP server on Agent Runtime, straight
+    s.append(arrow([(out, mids["stock"]), (1260, mids["stock"])], "req"))
+    steps.append([(1220, mids["stock"])])
+    s.append(steps_svg(steps))
     s.append(legend(30, Hh - 16, [("req", "request / data path")]))
     return svg(W, Hh, s, "Public use case: Internet users call the public Agent Runtime endpoint; a Public MCP Gateway "
                "calls MCP servers on the Internet and on Agent Runtime through connectors")
@@ -676,20 +677,19 @@ def d4():
     b.append(arrow([(404, -32), (404, 236)], "req"))
     b.append(text(414, 6, "private connection", 10.5, 600, INK, "start", halo=True))
 
-    # middle: the two options
-    b.append(text(680, 52, "Choose one (or both for redundancy)", 12, 700, INK, "middle"))
-    b.append(f'<rect x="530" y="76" width="300" height="220" rx="6" fill="#FDF2F3" stroke="{C["sec"]}" stroke-width="1"/>')
-    b.append(text(546, 100, "A · Site-to-Site VPN (IPsec)", 12, 700, C["sec"]))
-    b.append(icon(656, 116, "globe", C["gray"]))
-    b.append(text(680, 182, "Internet", 10.5, 600, SLATE, "middle"))
-    for r, t in enumerate(["IKEv2 · 1 tunnel per on-prem CIDR", "static routes in the VPC route table",
-                           "quick to set up, low cost", "bandwidth / latency depend on the Internet"]):
-        b.append(text(546, 210 + r * 17, "· " + t, 10.5, 400, SLATE))
-    b.append(f'<rect x="530" y="316" width="300" height="200" rx="6" fill="#FEF5EC" stroke="{C["compute"]}" stroke-width="1"/>')
-    b.append(text(546, 340, "B · Interconnect / leased line", 12, 700, C["compute"]))
+    # middle: the two options, card A above the links and card B below them
+    b.append(text(680, 40, "Choose one (or both for redundancy)", 12, 700, INK, "middle"))
+    b.append(f'<rect x="530" y="60" width="300" height="160" rx="6" fill="#FDF2F3" stroke="{C["sec"]}" stroke-width="1"/>')
+    b.append(text(546, 84, "A · Site-to-Site VPN (IPsec)", 12, 700, C["sec"]))
+    for r, t in enumerate(["over the Internet, IPsec-encrypted", "IKEv2 · 1 tunnel per on-prem CIDR",
+                           "static routes in the VPC route table", "quick to set up, low cost",
+                           "bandwidth / latency depend on the Internet"]):
+        b.append(text(546, 110 + r * 18, "· " + t, 10.5, 400, SLATE))
+    b.append(f'<rect x="530" y="310" width="300" height="190" rx="6" fill="#FEF5EC" stroke="{C["compute"]}" stroke-width="1"/>')
+    b.append(text(546, 334, "B · Interconnect / leased line", 12, 700, C["compute"]))
     for r, t in enumerate(["dedicated link DC ↔ GreenNode", "does not traverse the Internet", "fixed bandwidth + SLA",
                            "banking, sensitive data", "pair with VPN as backup"]):
-        b.append(text(546, 368 + r * 17, "· " + t, 10.5, 400, SLATE))
+        b.append(text(546, 360 + r * 18, "· " + t, 10.5, 400, SLATE))
 
     # data center
     b.append(group(870, 20, 470, 600, "Customer data center · xx.xx.x.x/xx", "onprem"))
@@ -709,10 +709,11 @@ def d4():
         ("TLS", "internal or public CA certificate"),
     ]))
 
-    # links
-    b.append(arrow([(428, 252), (500, 252), (500, 140), (656, 140)], "vpn", both=True))
-    b.append(arrow([(704, 140), (860, 140), (860, 252), (900, 252)], "vpn", both=True))
-    b.append(arrow([(428, 270), (510, 270), (510, 306), (850, 306), (850, 270), (900, 270)], "dx", both=True))
+    # links: two straight, parallel lines between the VPN GW / Interconnect and the customer GW
+    b.append(arrow([(428, 250), (900, 250)], "vpn", both=True))
+    b.append(text(680, 242, "A · IPsec over the Internet", 10.5, 600, C["sec"], "middle", halo=True))
+    b.append(arrow([(428, 270), (900, 270)], "dx", both=True))
+    b.append(text(680, 290, "B · Interconnect", 10.5, 600, C["compute"], "middle", halo=True))
 
     # CIDR plan
     b.append(text(20, 670, "CIDR plan — these three ranges must not overlap", 12.5, 700, INK))
@@ -735,26 +736,27 @@ def d4():
 # Each diagram is written to docs/<name>.svg of the matching sibling repo (see ARCH_JOBS).
 def a_travel():
     """sample-travel-buddy: web users -> Runtime (UI + LangGraph) -> LLM / Memory; Tavily through a Public MCP Gateway.
-    One Internet band on top holds both the web users and Tavily."""
-    W, Hh, DY = 1500, 610, 130               # DY: everything on the platform sits under the Internet band
+    One Internet band on top holds both the web users and Tavily; the tools/call path is one straight row."""
+    W, Hh, ROW = 1500, 530, 354
     s = []
     s.append(group(20, 16, W - 40, 100, "Internet", "internet"))
     s.append(people(120, 44) + lbl_right(120, 44, "Web users", ["Chat UI · REST · A2A"]))
     s.append(node(1300, 44, "mcp", C["mcp"], "Tavily MCP", ["web search · extract"], "right"))
-    s.append(group(290, 20 + DY, 920, 430, "AgentBase Platform — managed by GreenNode", "managed"))
-    s.append(node(340, 60 + DY, "gn-ai", C["ai"], "LLM — AI Platform", ["direct or sidecar :18080"]))
-    s.append(node(500, 60 + DY, "memory", C["db"], "Memory", ["CUSTOM + SEMANTIC"]))
-    s.append(node(870, 60 + DY, "access-control", C["idc"], "Access Control", ["secret: tavily-apikey"]))
-    s.append(node(360, 200 + DY, "agent-runtime", C["compute"], "travel-buddy", ["Agent Runtime · Public", "UI + LangGraph"]))
-    mids = gateway_compact(s, 600, 200 + DY, "MCP Gateway · Public", ["tavily"], "Network: Public")
+    s.append(group(290, 150, 830, 330, "AgentBase Platform — managed by GreenNode", "managed"))
+    s.append(node(340, 190, "gn-ai", C["ai"], "LLM — AI Platform", ["direct or sidecar :18080"]))
+    s.append(node(500, 190, "memory", C["db"], "Memory", ["CUSTOM + SEMANTIC"]))
+    s.append(node(360, ROW - 24, "agent-runtime", C["compute"], "travel-buddy", ["Agent Runtime · Public", "UI + LangGraph"]))
+    mids = gateway_pipeline(s, 600, ROW, ["tavily"], "Network: Public", "MCP Gateway · Public")
     t = mids["tavily"]
+    cx = 600 + 212 + (490 - 222) // 2        # centre of the tavily connector
+    s.append(node(cx - 24, 180, "access-control", C["idc"], "Access Control", ["secret: tavily-apikey"]))
 
-    s.append(arrow([(144, 94), (144, 224 + DY), (360, 224 + DY)], "req", "HTTPS", (220, 216 + DY)))
-    to_services(s, [(384, 200 + DY), (384, 170 + DY)], 170 + DY, [364, 524], 146 + DY)
-    s.append(arrow([(408, 224 + DY), (560, 224 + DY), (560, 258 + DY), (614, 258 + DY)], "req", "tools/call", (484, 216 + DY)))
-    s.append(arrow([(894, 146 + DY), (894, 226 + DY)], "req", "API key", (906, 190 + DY), "start"))
-    s.append(arrow([(1040, t), (1324, t), (1324, 92)], "req", "HTTPS · API key", (1150, t - 8)))
-    s.append(steps_svg([[(220, 240 + DY)], [(444, 170 + DY)], [(560, 240 + DY)], [(894, 168 + DY)], [(1150, t + 16)]]))
+    s.append(arrow([(144, 94), (144, ROW), (360, ROW)], "req", "HTTPS", (250, ROW - 8)))
+    to_services(s, [(384, ROW - 24), (384, 300)], 300, [364, 524], 276)
+    s.append(arrow([(408, ROW), (624, ROW)], "req", "tools/call", (516, ROW - 8)))
+    s.append(arrow([(cx, 268), (cx, t - 28)], "req", "API key", (cx - 14, 304), "end"))
+    s.append(arrow([(1080, t), (1324, t), (1324, 92)], "req", "HTTPS · API key", (1200, t - 8)))
+    s.append(steps_svg([[(144, 230)], [(444, 300)], [(560, ROW)], [(cx, 274)], [(1324, 230)]]))
     s.append(legend(30, Hh - 14, [("req", "request / data path")]))
     return svg(W, Hh, s, "travel-buddy architecture: web users call the Agent Runtime; the agent uses the LLM and Memory, "
                "and Tavily through a Public MCP Gateway whose connector takes its API key from Access Control")
@@ -763,66 +765,72 @@ def a_travel():
 def a_zalo():
     """sample-zalo-restaurant: Zalo -> public webhook proxy -> Private Agent Runtime -> Private MCP Gateway ->
     MCP server in the customer VPC; replies through the Zalo Bot API; traces go to a private self-hosted
-    Langfuse that admins open over a client-to-site VPN."""
-    W, Hh = 1600, 890
+    Langfuse that admins open over a client-to-site VPN.
+    Grid: the Runtime row holds Zalo (reply), the Runtime and the gateway; the webhook proxy sits straight under
+    the Runtime; every arrow is straight or turns once."""
+    W, Hh = 1470, 1020
+    R, T, P, A = 380, 640, 760, 860          # rows: Runtime / gateway · Langfuse · webhook proxy · admin VPN
+    RX, GX, X7 = 580, 800, 1320              # Runtime icon left edge · gateway left edge · MCP server column
     s = []
-    s.append(group(20, 60, 230, 780, "Internet", "internet"))
-    s.append(people(100, 90) + lbl_below(100, 90, "Customers", ["chat on Zalo"]))
-    s.append(node(100, 250, "globe", C["gray"], "Zalo Bot Platform", ["webhook · Bot API"]))
-    s.append(node(100, 735, "app", C["app"], "Admin", ["VPN client"]))
+    s.append(group(20, 60, 230, 920, "Internet", "internet"))
+    s.append(people(40, 100) + lbl_right(40, 100, "Customers", ["chat on Zalo"]))
+    s.append(node(40, R - 24, "globe", C["gray"], "Zalo Bot Platform", ["webhook · Bot API"], "topright"))
+    s.append(node(40, A - 24, "app", C["app"], "Admin", ["VPN client"], "topright"))
 
-    s.append(group(270, 20, 1310, 840, "GreenNode Cloud", "cloud"))
-    s.append(group(300, 60, 1250, 450, "AgentBase Platform — managed by GreenNode", "managed"))
-    svc = shared_services(s, 320, 96, 420)
-    s.append(abvpc(310, 266, 1230, 224))
-    s.append(node(580, 320, "agent-runtime", C["compute"], "Agent Runtime",
-                  ["Private mode", "agent image only", "IP allow: proxy"]))
-    mids = gateway_compact(s, 900, 286, "MCP Gateway · Private", ["restaurant@vpc"], "Network: Private → customer VPC")
+    s.append(group(270, 20, 1180, 960, "GreenNode Cloud", "cloud"))
+    s.append(group(300, 60, 1120, 450, "AgentBase Platform — managed by GreenNode", "managed"))
+    # LLM straight above the Runtime, Access Control straight above the connector
+    cx = GX + 212 + (490 - 222) // 2
+    svc = shared_services(s, RX + 24 - 64, 96, 3 * ((cx - RX - 24) // 2) + 40)
+    s.append(abvpc(310, 266, 1100, 230))
+    s.append(node(RX, R - 24, "agent-runtime", C["compute"], "Agent Runtime", ["Private · IP allow: proxy"], "topright"))
+    mids = gateway_pipeline(s, GX, R, ["restaurant@vpc"], "Network: Private → customer VPC", "MCP Gateway · Private")
     r = mids["restaurant@vpc"]
 
-    s.append(group(300, 530, 1250, 310, "Customer VPC · 10.20.0.0/16", "vpc"))
-    s.append(group(320, 570, 290, 255, "Public subnet", "public"))
-    s.append(node(520, 600, "gn-server", C["net"], "Webhook proxy", ["vServer · Caddy", "POST /webhook/zalo only"]))
-    s.append(node(380, 735, "firewall", C["gray"], "Admin VPN", ["pfSense / OpenVPN"]))
-    s.append(group(640, 570, 580, 255, "Private subnet · observability", "private"))
-    s.append(node(760, 600, "langfuse", C["ai"], "Langfuse", ["vServer / VKS · :3000"]))
-    s.append(node(760, 735, "db", C["gray"], "Langfuse storage", ["Postgres · ClickHouse · Redis · MinIO"]))
-    s.append(card(880, 615, 320, 112, "Inbound rules (SG / Network ACL)", [
+    s.append(group(300, 540, 1130, 420, "Customer VPC · 10.20.0.0/16", "vpc"))
+    s.append(group(320, 580, 330, 360, "Public subnet", "public"))
+    s.append(node(RX, P - 24, "gn-server", C["net"], "Webhook proxy", ["vServer · Caddy", "POST /webhook/zalo only"]))
+    s.append(node(400, A - 24, "firewall", C["gray"], "Admin VPN", ["pfSense / OpenVPN"]))
+    s.append(group(670, 580, 430, 360, "Private subnet · observability", "private"))
+    s.append(node(720, T - 24, "langfuse", C["ai"], "Langfuse", ["vServer / VKS · :3000"], "topright"))
+    s.append(node(940, T - 24, "db", C["gray"], "Langfuse storage", ["Postgres · ClickHouse · Redis · MinIO"]))
+    s.append(card(770, 740, 310, 112, "Inbound rules (SG / Network ACL)", [
         ("proxy :443", "Internet (Zalo webhook)"),
         ("mcp :8443", "AgentBase source range"),
         ("langfuse :3000", "AgentBase range + VPN pool"),
         ("vpn :1194/udp", "admin IPs only"),
     ]))
-    s.append(group(1250, 570, 285, 255, "Private subnet · MCP", "private"))
-    s.append(node(1300, 615, "mcp", C["mcp"], "zalo-mcp-server", ["vServer / VKS"], badge="gn-server"))
-    s.append(node(1300, 735, "db", C["gray"], "SQLite volume", ["menu · bookings"]))
+    # wide enough that its title ends left of the connector arrow coming down at X7
+    s.append(group(1120, 580, 290, 360, "Private subnet · MCP", "private"))
+    s.append(node(X7 - 24, T, "mcp", C["mcp"], "zalo-mcp-server", ["vServer / VKS"], badge="gn-server"))
+    s.append(node(X7 - 24, P + 40, "db", C["gray"], "SQLite volume", ["menu · bookings"]))
 
     # 1 · the guest writes on Zalo
-    s.append(arrow([(124, 175), (124, 250)], "req", "message", (134, 218), "start"))
+    s.append(arrow([(64, 150), (64, R - 24)], "req", "message", (74, 250), "start"))
     # 2 · Zalo calls the webhook on the public proxy (only POST /webhook/zalo is forwarded)
-    s.append(arrow([(148, 286), (260, 286), (260, 624), (520, 624)], "req", "HTTPS webhook", (390, 618)))
-    # 3 · proxy -> Private runtime endpoint (the runtime's IP allow-list admits only the proxy)
-    s.append(arrow([(544, 600), (544, 356), (580, 356)], "req", "private", (536, 420), "end"))
-    # 4 · Agent -> LLM and Memory, one arrow per service
-    to_services(s, [(604, 320), (604, 240)], 240, [svc["llm"], svc["memory"]], 96 + SVC_TIP)
-    s.append(text(614, 300, "LLM · Memory", 10.5, 600, INK, "start", halo=True))
-    # 5 · MCP tools/call -> Private gateway
-    s.append(arrow([(628, 344), (914, 344)], "req", "MCP tools/call", (770, 338)))
-    # 6 · Access Control -> connector: the API key, never seen by the agent
-    s.append(arrow([(660, 152), (1180, 152), (1180, 312)], "req", "API key", (1190, 250), "start"))
+    s.append(arrow([(64, R + 24), (64, P), (RX, P)], "req", "HTTPS webhook", (450, P - 8)))
+    # 3 · proxy -> Private runtime endpoint, straight up (the runtime's IP allow-list admits only the proxy)
+    s.append(arrow([(RX + 12, P - 24), (RX + 12, R + 24)], "req", "private", (RX + 2, 560), "end"))
+    # 4 · Agent -> LLM (straight up) and Memory
+    to_services(s, [(RX + 24, R - 24), (RX + 24, 250)], 250, [svc["llm"], svc["memory"]], 96 + SVC_TIP)
+    s.append(text(RX + 34, 300, "LLM · Memory", 10.5, 600, INK, "start", halo=True))
+    # 5 · MCP tools/call, on the Runtime's row
+    s.append(arrow([(RX + 48, R), (GX + 24, R)], "req", "MCP tools/call", ((RX + 48 + GX) // 2, R + 18)))
+    # 6 · Access Control -> connector, straight down: the API key, never seen by the agent
+    s.append(arrow([(cx, 214), (cx, r - 28)], "req", "API key", (cx - 10, 300), "end"))
     # 7 · connector -> MCP server in the customer VPC
-    s.append(arrow([(1350, r), (1500, r), (1500, 639), (1348, 639)], "req", "HTTPS :8443 · X-Api-Key", (1490, 470), "end"))
-    # 8 · reply: the agent calls the Zalo Bot API (sendMessage) over HTTPS
-    s.append(arrow([(580, 334), (280, 334), (280, 262), (148, 262)], "req", "sendMessage (reply)", (450, 328)))
+    s.append(arrow([(GX + 480, r), (X7, r), (X7, T)], "req", "HTTPS :8443 · X-Api-Key", (X7 - 10, 528), "end"))
+    # 8 · reply: the agent calls the Zalo Bot API (sendMessage), straight left
+    s.append(arrow([(RX, R), (88, R)], "req", "sendMessage (reply)", (420, R - 8)))
     # 9 · traces to the private Langfuse
-    s.append(arrow([(620, 434), (620, 612), (760, 612)], "req", "traces (OTel)", (628, 465), "start"))
+    s.append(arrow([(RX + 36, R + 24), (RX + 36, T), (720, T)], "req", "traces (OTel)", (RX + 46, 528), "start"))
+    s.append(arrow([(768, T), (940, T)], "req"))
     # 10 · admins: client-to-site VPN, then the Langfuse UI on a private IP
-    s.append(arrow([(148, 759), (380, 759)], "vpn", both=True))
-    s.append(arrow([(428, 759), (720, 759), (720, 636), (760, 636)], "req", "Langfuse UI", (574, 753)))
-    s.append(arrow([(784, 688), (784, 735)], "req"))
-    s.append(arrow([(1324, 700), (1324, 735)], "req"))
-    s.append(steps_svg([[(124, 205)], [(285, 624)], [(544, 450)], [(494, 240)], [(770, 360)], [(1180, 200)],
-                        [(1500, 410)], [(350, 334)], [(690, 612)], [(205, 759)]]))
+    s.append(arrow([(88, A), (400, A)], "vpn", both=True))
+    s.append(arrow([(448, A), (744, A), (744, T + 24)], "req", "Langfuse UI", (596, A - 8)))
+    s.append(arrow([(X7, T + 80), (X7, P + 40)], "req"))
+    s.append(steps_svg([[(64, 300)], [(300, P)], [(RX + 12, 680)], [(RX + 24, 270)], [(GX - 12, R)], [(cx, 250)],
+                        [(X7, 450)], [(300, R)], [(RX + 36, 600)], [(250, A)]]))
     s.append(legend(30, Hh - 14, [("req", "request / data path"), ("vpn", "client-to-site VPN (admins)")]))
     return svg(W, Hh, s, "Zalo restaurant architecture: Zalo webhooks reach a Private Agent Runtime through a public proxy; "
                "the agent calls the MCP server in the customer VPC via a Private MCP Gateway, replies through the Zalo Bot "
@@ -864,15 +872,15 @@ def a_stock():
     s.append(node(x0 + 60, 150, "agent-runtime", C["compute"], "Agent", ["Agent Runtime · Private"]))
     s.append(node(x0 + 250, 150, "mcp-gateway", C["net"], "MCP Gateway", ["Private · connector stock"]))
     s.append(group(x0, 300, 500, 300, "Customer VPC · xx.xx.x.x/xx", "vpc"))
-    s.append(group(x0 + 16, 340, 300, 240, "Private subnet · MCP", "private"))
-    s.append(node(x0 + 110, 420, "mcp", C["mcp"], "vn-stock-mcp", ["vServer / VKS · :8443", "from 172.30.0.0/16"], badge="gn-server"))
-    s.append(node(x0 + 380, 420, "gn-vnet", C["net"], "NAT / proxy", ["Internet egress"]))
-    s.append(node(x0 + 380, 700, "globe", C["gray"], "24hMoney API", ["public · unofficial"]))
+    s.append(group(x0 + 16, 340, 330, 240, "Private subnet · MCP", "private"))
+    s.append(node(x0 + 250, 420, "mcp", C["mcp"], "vn-stock-mcp", ["vServer / VKS · :8443", "from 172.30.0.0/16"], badge="gn-server"))
+    s.append(node(x0 + 420, 420, "gn-vnet", C["net"], "NAT / proxy", ["Internet egress"]))
+    s.append(node(x0 + 420, 700, "globe", C["gray"], "24hMoney API", ["public · unofficial"]))
     s.append(arrow([(x0 + 108, 174), (x0 + 250, 174)], "req", "tools/call", (x0 + 179, 166)))
-    s.append(arrow([(x0 + 274, 238), (x0 + 274, 396), (x0 + 134, 396), (x0 + 134, 420)], "req"))
+    s.append(arrow([(x0 + 274, 246), (x0 + 274, 420)], "req"))
     s.append(text(x0 + 284, 292, "private connection", 10.5, 600, INK, "start", halo=True))
-    s.append(arrow([(x0 + 158, 444), (x0 + 380, 444)], "req", "24hMoney :443", (x0 + 268, 436)))
-    s.append(arrow([(x0 + 404, 506), (x0 + 404, 700)], "req", "HTTPS", (x0 + 414, 640), "start"))
+    s.append(arrow([(x0 + 298, 444), (x0 + 420, 444)], "req", "24hMoney :443", (x0 + 359, 436)))
+    s.append(arrow([(x0 + 444, 506), (x0 + 444, 700)], "req", "HTTPS", (x0 + 454, 640), "start"))
 
     # (c) Private gateway (Route CIDRs = on-prem) -> customer VPC -> VPN / Interconnect -> data center
     x0 = 1100
@@ -900,46 +908,49 @@ def a_stock():
 
 
 def a_stock_flow():
-    """sample-mcp-stock-server call flow: Agent -> MCP Gateway (connector stock, API key) -> vn-stock-mcp -> 24hMoney."""
-    W, Hh = 1500, 490
+    """sample-mcp-stock-server call flow on one straight row:
+    Agent -> MCP Gateway (connector stock, API key) -> vn-stock-mcp -> 24hMoney."""
+    W, Hh, m, GX = 1500, 490, 260, 220
     s = []
-    s.append(group(20, 20, 1200, 440, "AgentBase Platform — managed by GreenNode", "managed"))
-    s.append(node(60, 215, "agent-runtime", C["compute"], "Agent", ["travel-buddy · your agents"]))
-    s.append(node(560, 40, "access-control", C["idc"], "Access Control", ["secret: stock-mcp-key"]))
-    mids = gateway_compact(s, 300, 150, "MCP Gateway · Public", ["stock"], "Network: Public")
-    m = mids["stock"]
-    s.append(group(820, 120, 380, 320, "Agent Runtime · vn-stock-mcp", "shared"))
-    s.append(node(870, m - 24, "inbound-auth", C["net"], "API key check", ["fail-closed · 401 / 503"]))
-    s.append(node(1030, m - 24, "mcp", C["mcp"], "13 MCP tools", ["/mcp · FastMCP"]))
-    s.append(card(840, 300, 350, 120, "Tools", [
+    s.append(group(20, 20, 1160, 440, "AgentBase Platform — managed by GreenNode", "managed"))
+    s.append(node(60, m - 24, "agent-runtime", C["compute"], "Agent", ["travel-buddy · your agents"]))
+    mids = gateway_pipeline(s, GX, m, ["stock"], "Network: Public", "MCP Gateway · Public")
+    cx = GX + 212 + (490 - 222) // 2
+    s.append(node(cx - 24, 50, "access-control", C["idc"], "Access Control", ["secret: stock-mcp-key"]))
+    s.append(group(760, 130, 400, 310, "Agent Runtime · vn-stock-mcp", "shared"))
+    s.append(node(800, m - 24, "inbound-auth", C["net"], "API key check", ["fail-closed · 401 / 503"]))
+    s.append(node(980, m - 24, "mcp", C["mcp"], "13 MCP tools", ["/mcp · FastMCP"]))
+    s.append(card(780, 330, 360, 92, "Tools", [
         "Market: top · gainers · losers · active · quote",
         "Company: search · profile · valuation",
         "History: price · foreign · dividend · plan · news",
     ]))
-    s.append(group(1250, 20, 230, 440, "Internet", "internet"))
+    s.append(group(1210, 20, 270, 440, "Internet", "internet"))
     s.append(node(1310, m - 24, "globe", C["gray"], "24hMoney API", ["public · unofficial"]))
 
-    s.append(arrow([(108, 239), (250, 239), (250, 208), (314, 208)], "req", "tools/call", (180, 231)))
-    s.append(arrow([(584, 125), (584, 176)], "req", "API key", (594, 142), "start"))
-    s.append(arrow([(740, m), (870, m)], "req", "X-Api-Key", (785, m - 8)))
-    s.append(arrow([(918, m), (1030, m)], "req", "OK", (974, m - 8)))
-    s.append(arrow([(1078, m), (1310, m)], "req", "HTTPS", (1270, m - 8)))
-    s.append(steps_svg([[(180, 255)], [(584, 160)], [(785, m + 16)], [(974, m + 16)], [(1150, m + 16)]]))
+    s.append(arrow([(108, m), (GX + 24, m)], "req", "tools/call", (164, m - 8)))
+    s.append(arrow([(cx, 136), (cx, m - 28)], "req", "API key", (cx - 10, 170), "end"))
+    s.append(arrow([(GX + 480, m), (800, m)], "req", "X-Api-Key", (750, m - 8)))
+    s.append(arrow([(848, m), (980, m)], "req", "OK", (914, m - 8)))
+    s.append(arrow([(1028, m), (1310, m)], "req", "HTTPS", (1250, m - 8)))
+    s.append(steps_svg([[(164, m + 16)], [(cx, 150)], [(750, m + 16)], [(914, m + 16)], [(1120, m + 16)]]))
     s.append(legend(30, Hh - 14, [("req", "request / data path")]))
     return svg(W, Hh, s, "mcp-stock-server architecture: agents call tools through a Public MCP Gateway; the stock connector "
                "attaches an API key from Access Control; the server validates the key and calls the 24hMoney API")
 
 
 def a_byo():
-    """sample-byo-agent-mcp-gateway: an agent or app outside AgentBase -> Public MCP Gateway -> MCP servers."""
-    W, Hh = 1500, 500
+    """sample-byo-agent-mcp-gateway: an agent or app outside AgentBase -> Public MCP Gateway -> MCP servers.
+    The two callers merge on a bus that enters the gateway on its row; each connector leaves straight."""
+    W, Hh, ROW, GX = 1500, 500, 240, 450
     s = []
     s.append(group(20, 60, 330, 400, "Your infrastructure (outside GreenNode)", "onprem"))
-    s.append(node(80, 120, "app", C["app"], "Your agent / app", ["LangGraph · script · CLI"]))
-    s.append(node(80, 280, "app", C["app"], "Claude Desktop / Cursor", ["via mcp-remote"]))
+    s.append(node(80, ROW - 104, "app", C["app"], "Your agent / app", ["LangGraph · script · CLI"]))
+    s.append(node(80, ROW + 56, "app", C["app"], "Claude Desktop / Cursor", ["via mcp-remote"]))
     s.append(group(400, 20, 750, 460, "AgentBase Platform — managed by GreenNode", "managed"))
-    s.append(node(760, 40, "access-control", C["idc"], "Access Control", ["connector secrets"]))
-    mids = gateway_compact(s, 450, 160, "MCP Gateway · Public", ["tavily", "stock"], "Network: Public")
+    mids = gateway_pipeline(s, GX, ROW, ["tavily", "stock"], "Network: Public", "MCP Gateway · Public")
+    cx = GX + 212 + (490 - 222) // 2
+    s.append(node(cx - 24, 36, "access-control", C["idc"], "Access Control", ["connector secrets"]))
     s.append(node(1000, mids["stock"] - 24, "mcp", C["mcp"], "MCP server", ["on Agent Runtime"]))
     s.append(group(1180, 60, 300, 400, "Internet", "internet"))
     s.append(node(1250, mids["tavily"] - 24, "mcp", C["mcp"], "MCP SaaS", ["Tavily · GitHub …"]))
@@ -948,42 +959,45 @@ def a_byo():
         "reachable from the customer private network.",
     ]))
 
-    s.append(f'<polyline points="128,144 380,144" fill="none" stroke="{INK}" stroke-width="1.6"/>')
-    s.append(f'<polyline points="128,304 380,304" fill="none" stroke="{INK}" stroke-width="1.6"/>')
-    s.append(f'<polyline points="380,144 380,304" fill="none" stroke="{INK}" stroke-width="1.6"/>')
-    s.append(arrow([(380, 218), (464, 218)], "req"))
-    s.append(text(254, 136, "HTTPS · IAM token / JWT", 10.5, 600, INK, "middle", halo=True))
-    s.append(arrow([(784, 126), (784, 160)], "req"))   # secrets for both connectors
-    s.append(arrow([(890, mids["tavily"]), (1250, mids["tavily"])], "req"))
-    s.append(arrow([(890, mids["stock"]), (1000, mids["stock"])], "req"))
-    s.append(steps_svg([[(254, 160)], [(420, 218)], [(804, 143)], [(1110, mids["tavily"])], [(945, mids["stock"])]]))
+    # 1 · both callers -> one bus -> the gateway row
+    s.append(line([(128, ROW - 80), (380, ROW - 80)]))
+    s.append(line([(128, ROW + 80), (380, ROW + 80)]))
+    s.append(f'<polyline points="380,{ROW - 80} 380,{ROW + 80}" fill="none" stroke="{INK}" stroke-width="1.6"/>')
+    s.append(arrow([(380, ROW), (GX + 24, ROW)], "req"))
+    s.append(text(254, ROW - 88, "HTTPS · IAM token / JWT", 10.5, 600, INK, "middle", halo=True))
+    s.append(arrow([(cx, 122), (cx, mids["tavily"] - 28)], "req"))   # secrets for the connectors
+    s.append(arrow([(GX + 480, mids["tavily"]), (1250, mids["tavily"])], "req"))
+    s.append(arrow([(GX + 480, mids["stock"]), (1000, mids["stock"])], "req"))
+    s.append(steps_svg([[(380, ROW - 40)], [(420, ROW)], [(cx, 160)], [(1110, mids["tavily"])], [(965, mids["stock"])]]))
     s.append(legend(30, Hh - 14, [("req", "request / data path")]))
     return svg(W, Hh, s, "BYO agent architecture: an agent or app running outside AgentBase calls a Public MCP Gateway with an IAM "
                "token or JWT; the gateway checks policy, takes connector secrets from Access Control and calls the MCP servers")
 
 
 def a_onprem():
-    """sample-onprem-mcp-vpn: Agent -> Private MCP Gateway -> customer VPC -> VPN Site-to-Site -> on-prem MCP."""
-    W, Hh, DY = 1600, 590, 170        # DY: room above the AgentBase VPC for Shared services
+    """sample-onprem-mcp-vpn: Agent -> Private MCP Gateway -> customer VPC -> VPN Site-to-Site -> on-prem MCP.
+    The whole request path is one straight row; LLM sits straight above the Agent, Access Control straight above
+    the connector."""
+    W, Hh, e, AX, GX = 1760, 590, 360, 282, 420
     s = []
-    s.append(group(20, 20, 710, 530, "AgentBase Platform — managed by GreenNode", "managed"))
-    svc = shared_services(s, 40, 56, 670)
-    s.append(abvpc(36, 60 + DY, 678, 300))
-    s.append(node(60, 200 + DY, "agent-runtime", C["compute"], "Agent", ["Agent Runtime"]))
-    mids = gateway_compact(s, 220, 120 + DY, "MCP Gateway · Private", ["erp@onprem"], "Network: Private · Route CIDRs = on-prem")
-    e = mids["erp@onprem"]
-    s.append(group(760, 20, 400, 530, "Customer VPC on GreenNode · 10.20.0.0/16", "vpc"))
-    s.append(node(910, e - 24, "gn-vnet", C["net"], "VPN Site-to-Site", ["GreenNode vNetwork"]))
-    s.append(card(780, 70, 360, 95, "Route table (example)", [
+    cx = GX + 212 + (490 - 222) // 2
+    s.append(group(20, 20, 940, 530, "AgentBase Platform — managed by GreenNode", "managed"))
+    svc = shared_services(s, AX + 24 - 64, 56, 3 * ((cx - AX - 24) // 2) + 40)
+    s.append(abvpc(36, 230, 908, 300))
+    s.append(node(AX, e - 24, "agent-runtime", C["compute"], "Agent", ["Agent Runtime"]))
+    mids = gateway_pipeline(s, GX, e, ["erp@onprem"], "Network: Private · Route CIDRs = on-prem", "MCP Gateway · Private")
+    s.append(group(990, 20, 360, 530, "Customer VPC on GreenNode · 10.20.0.0/16", "vpc"))
+    s.append(node(1146, e - 24, "gn-vnet", C["net"], "VPN Site-to-Site", ["GreenNode vNetwork"]))
+    s.append(card(1010, 70, 320, 95, "Route table (example)", [
         ("10.20.0.0/16", "local"),
         ("172.30.0.0/16", "→ AgentBase (private)"),
         ("192.168.0.0/16", "→ VPN Site-to-Site"),
     ]))
-    s.append(group(1190, 20, 390, 530, "Customer data center · 192.168.0.0/16", "onprem"))
-    s.append(node(1230, e - 24, "firewall", C["gray"], "IPsec gateway", ["strongSwan / firewall"]))
-    s.append(node(1460, e - 24, "mcp", C["mcp"], "onprem-mcp", ["API key · audit log"]))
-    s.append(node(1460, 460, "db", C["gray"], "ERP · HR · Inventory", ["stays on-premises"]))
-    s.append(card(1200, 70, 240, 139, "DC routes + firewall (example)", [
+    s.append(group(1380, 20, 360, 530, "Customer data center · 192.168.0.0/16", "onprem"))
+    s.append(node(1420, e - 24, "firewall", C["gray"], "IPsec gateway", ["strongSwan / firewall"]))
+    s.append(node(1640, e - 24, "mcp", C["mcp"], "onprem-mcp", ["API key · audit log"]))
+    s.append(node(1640, 460, "db", C["gray"], "ERP · HR · Inventory", ["stays on-premises"]))
+    s.append(card(1400, 70, 320, 139, "DC routes + firewall (example)", [
         ("10.20.0.0/16", "→ IPsec tunnel"),
         ("172.30.0.0/16", "→ IPsec tunnel"),
         ("src 10.20.0.0/16", "allow tcp/8443"),
@@ -992,21 +1006,21 @@ def a_onprem():
         ("everything else", "deny"),
     ]))
 
-    # 1 · Agent -> LLM and Memory: around the AgentBase VPC title, then one arrow per service
-    to_services(s, [(84, 200 + DY), (84, 272), (290, 272), (290, 206)], 206, [svc["llm"], svc["memory"]], 56 + SVC_TIP)
-    s.append(text(300, 254, "LLM · Memory", 10.5, 600, INK, "start", halo=True))
-    # 2 · MCP tools/call
-    s.append(arrow([(108, 224 + DY), (180, 224 + DY), (180, 178 + DY), (234, 178 + DY)], "req", "tools/call", (144, 240 + DY)))
-    # 3 · Access Control -> connector: the outbound API key
-    s.append(arrow([(548, 186), (548, 146 + DY)], "req", "API key", (560, 254), "start"))
-    s.append(arrow([(660, e), (910, e)], "req", "private", (840, e - 8)))
-    s.append(arrow([(958, e), (1230, e)], "vpn", both=True))
-    s.append(text(1094, e - 10, "IPsec IKEv2 tunnel", 10.5, 600, C["sec"], "middle", halo=True))
-    s.append(text(1094, e + 22, "over the Internet", 10.5, 400, C["sec"], "middle", halo=True))
-    s.append(arrow([(1278, e), (1460, e)], "req", "tcp/8443", (1369, e - 8)))
-    s.append(arrow([(1484, e + 66), (1484, 460)], "req", "SQL", (1500, 436), "start"))
-    s.append(steps_svg([[(187, 272)], [(180, 201 + DY)], [(548, 270)], [(800, e + 16)], [(1094, e + 40)],
-                        [(1369, e + 16)], [(1484, 432)]]))
+    # 1 · Agent -> LLM (straight up) and Memory
+    to_services(s, [(AX + 24, e - 24), (AX + 24, 206)], 206, [svc["llm"], svc["memory"]], 56 + SVC_TIP)
+    s.append(text(AX + 14, 290, "LLM · Memory", 10.5, 600, INK, "end", halo=True))
+    # 2 · MCP tools/call, on the Agent's row
+    s.append(arrow([(AX + 48, e), (GX + 24, e)], "req", "tools/call", ((AX + 48 + GX) // 2 + 6, e - 8)))
+    # 3 · Access Control -> connector, straight down: the outbound API key
+    s.append(arrow([(cx, 186), (cx, e - 28)], "req", "API key", (cx - 10, 254), "end"))
+    s.append(arrow([(GX + 480, e), (1146, e)], "req", "private", (1040, e - 8)))
+    s.append(arrow([(1194, e), (1420, e)], "vpn", both=True))
+    s.append(text(1307, e - 10, "IPsec IKEv2 tunnel", 10.5, 600, C["sec"], "middle", halo=True))
+    s.append(text(1307, e + 22, "over the Internet", 10.5, 400, C["sec"], "middle", halo=True))
+    s.append(arrow([(1468, e), (1640, e)], "req", "tcp/8443", (1554, e - 8)))
+    s.append(arrow([(1664, e + 66), (1664, 460)], "req", "SQL", (1680, 436), "start"))
+    s.append(steps_svg([[(AX + 24, 260)], [((AX + 48 + GX) // 2 + 6, e + 16)], [(cx, 220)], [(1040, e + 16)],
+                        [(1307, e + 40)], [(1554, e + 16)], [(1664, 432)]]))
     s.append(legend(30, Hh - 14, [("req", "request / data path"), ("vpn", "Site-to-Site VPN (IPsec)")]))
     return svg(W, Hh, s, "On-premises MCP architecture: an agent on AgentBase uses the platform LLM and Memory and calls a "
                "Private MCP Gateway, whose connector takes its API key from Access Control and reaches the on-premises MCP "
