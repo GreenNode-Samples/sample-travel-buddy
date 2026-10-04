@@ -8,7 +8,7 @@
     "viewBox": [940, 620]
   },
   "components": [
-    { "id": "user", "type": "external", "label": "Khách duyệt web", "sublabel": "Browser", "pos": [20, 280], "size": [130, 60] },
+    { "id": "user", "type": "external", "label": "Web user", "sublabel": "Browser", "pos": [20, 280], "size": [130, 60] },
     { "id": "runtime", "type": "backend", "label": "travel-buddy Runtime", "sublabel": "LangGraph agent · :8080", "pos": [250, 278], "size": [160, 64] },
     { "id": "memory", "type": "database", "label": "Memory", "sublabel": "2 strategies: prefs + facts", "pos": [507, 120], "size": [156, 60] },
     { "id": "llm", "type": "cloud", "label": "LLM API", "sublabel": "GLM · OpenAI-compat", "pos": [520, 280], "size": [130, 60] },
@@ -31,7 +31,7 @@
       "title": "Policy",
       "items": [
         "Gateway → Tavily: policy allow-travel-tavily (5 actions)",
-        "Mọi action khác: deny by default",
+        "All other actions: deny by default",
         "Inbound IAM service account · Outbound APIKEY"
       ]
     }

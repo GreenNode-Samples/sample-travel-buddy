@@ -15,7 +15,7 @@ The diagrams follow the AWS Architecture Diagram layout style, use the official 
 | Component | Location | Role |
 |---|---|---|
 | **Agent Runtime** | AgentBase Platform, managed by GreenNode — **Public**: shared public endpoint · **Private**: **AgentBase VPC** (`172.30.0.0/16`) | Runs the agent. Network is **Public** (through the shared AgentBase public gateway) or **Private** (select your VPC + Subnet + Route CIDRs → traffic goes through **VPC Peering**) |
-| **Sidecar LLM Proxy** | Injected automatically into the agent (`localhost:18080`) | All LLM calls go through the sidecar, not through MCP Gateway |
+| **Sidecar LLM Proxy** | Injected automatically into the agent (`localhost:18080`) | Optional LLM path: the agent calls the AI Platform directly (`LLM_BASE_URL`) or through the sidecar. LLM calls never go through MCP Gateway |
 | **Container Registry (vCR)** | AgentBase Platform, private per organization | The Runtime pulls the agent image from vCR. You can use a **public registry** (Docker Hub, GHCR, etc.) instead of vCR if you accept pulling over the Internet |
 | **Memory · Access Control** | AgentBase Platform | Memory (short-term + long-term) and Access Control (Agent Identity, API Key / OAuth2 credentials), called through the SDK |
 | **MCP Gateway** | AgentBase Platform, managed — **Public**: shared public endpoint · **Private**: **AgentBase VPC** | **Proxy for every MCP tool call**: Inbound Auth (IAM Permissions / JWT) → Policy Group (ALLOW / DENY) → MCP Connector. Network is **Public** or **Private** (your VPC + Subnet + Route CIDRs, through VPC Peering) |
@@ -36,15 +36,16 @@ Agent Runtime and MCP Gateway **never run in your VPC**. In Public mode they are
 | # | Flow | Path |
 |---|---|---|
 | 1 | Internal app → Agent Runtime | An internal app in your VPC calls the agent through VPC Peering (Runtime in Private mode) |
-| 2 | vCR → Runtime | Pulls the agent image (or from a public registry if you agree) |
-| 3 | Runtime → LLM, Memory, Access Control | LLM through the Sidecar LLM Proxy `:18080`; Memory and Access Control through the SDK |
-| 4 | Runtime → MCP Gateway | MCP `tools/call`; the gateway verifies Inbound Auth, then checks the Policy Group |
-| 5 | Public gateway · connector `tavily` → MCP on the Internet | Outbound API Key |
-| 6 | Public gateway · connector `stock` → MCP running on Agent Runtime | Example: the `sample-mcp-stock-server` sample |
-| 7 | Private gateway · connector `crm` → MCP in your VPC | Private gateway → VPC Peering → private IP on vServer / VKS |
-| 8 | Private gateway · connector `erp` → MCP on-premises | Private gateway (Route CIDRs = on-premises CIDR) → VPC Peering → your VPC → VPN GW / Interconnect → data center firewall |
+| 2 | Runtime → LLM, Memory, Access Control | One arrow per service. LLM directly or through the Sidecar LLM Proxy `:18080`; Memory and Access Control through the SDK |
+| 3 | Runtime → MCP Gateway | MCP `tools/call`; the gateway verifies Inbound Auth, then checks the Policy Group |
+| 4 | Public gateway · connector `tavily` → MCP on the Internet | Outbound API Key |
+| 5 | Public gateway · connector `stock` → MCP running on Agent Runtime | Example: the `sample-mcp-stock-server` sample |
+| 6 | Private gateway · connector `crm` → MCP in your VPC | Private gateway → VPC Peering → private IP on vServer / VKS |
+| 7 | Private gateway · connector `erp` → MCP on-premises | Private gateway (Route CIDRs = on-premises CIDR) → VPC Peering → your VPC → VPN GW / Interconnect → data center firewall |
 
-> The diagram shows **two gateways**: a Private gateway only uses the private network (docs: *"Internal — never leaves the private network"*), so connectors that reach the Internet (`tavily`) and MCP servers with a public endpoint (`stock`) sit on a separate **Public** gateway. The agent can use both gateways.
+The unnumbered arrow **vCR → Runtime** is the image pull at deploy time (or from a public registry if you agree), not part of a request.
+
+> The diagram shows **two gateways**: a Private gateway only uses the private network (docs: *"Internal — never leaves the private network"*), so connectors that reach the Internet (`tavily`) and MCP servers with a public endpoint (`stock`) sit on a separate **Public** gateway. The agent can use both gateways; a Private-mode Runtime reaching the Public gateway's endpoint relies on outbound access from the Runtime (see *Confirm with GreenNode* below).
 
 ---
 
@@ -56,13 +57,14 @@ Scenario: the agent serves users on the Internet and only uses public tools (Saa
 
 | # | Flow |
 |---|---|
-| 1 | A user / app on the Internet calls the public endpoint of Agent Runtime (HTTPS, IAM / API key) |
-| 2 | The Runtime pulls the image from vCR |
-| 3 | The Runtime calls the LLM (sidecar `:18080`) / Memory / Access Control |
-| 4 | The Runtime calls MCP Gateway → Inbound Auth → Policy Group |
-| 5 | Connector `tavily` → MCP on the Internet (API Key) |
-| 6 | Connector `github` → MCP on the Internet (OAuth 3LO, user consent) |
-| 7 | Connector `stock` → MCP server running on AgentBase Runtime |
+| 1 | A user / app on the Internet calls the public endpoint of Agent Runtime (HTTPS, Inbound Identity IAM or JWT) |
+| 2 | The Runtime calls the LLM (directly or sidecar `:18080`), Memory and Access Control |
+| 3 | The Runtime calls MCP Gateway → Inbound Auth → Policy Group |
+| 4 | Connector `tavily` → MCP on the Internet (API Key) |
+| 5 | Connector `github` → MCP on the Internet (OAuth 3LO, user consent) |
+| 6 | Connector `stock` → MCP server running on Agent Runtime |
+
+The image pull from vCR (unnumbered arrow) happens at deploy time.
 
 ```jsonc
 // Agent Runtime — leave networkConfig empty = PUBLIC (default)
@@ -73,7 +75,7 @@ Scenario: the agent serves users on the Internet and only uses public tools (Saa
 "targets": [
   { "name": "tavily", "type": "MCP", "endpoint": "https://<Tavily MCP endpoint>",
     "outboundAuth": { "type": "APIKEY", "flow": "2LO", "headerName": "Authorization",
-                      "headerValuePrefix": "Bearer ", "providerName": "tavily-key" } },
+                      "headerValuePrefix": "Bearer ", "providerName": "tavily-apikey" } },
   { "name": "github", "type": "MCP", "endpoint": "https://<GitHub MCP endpoint>",
     "outboundAuth": { "type": "OAUTH", "flow": "3LO", "providerName": "github-oauth",
                       "returnUrl": "https://<gateway endpoint>/oauth/return" } }
@@ -89,10 +91,9 @@ Scenario: the agent serves users on the Internet and only uses public tools (Saa
 | # | Flow |
 |---|---|
 | 1 | An internal app in your VPC calls the agent through VPC Peering |
-| 2 | The Runtime pulls the image from vCR |
-| 3 | The Runtime calls the LLM (sidecar) / Memory / Access Control |
-| 4 | The Runtime calls MCP Gateway → Inbound Auth → Policy Group |
-| 5 | Connectors `inventory` and `crm` call the MCP servers by private IP, through VPC Peering |
+| 2 | The Runtime calls the LLM (directly or sidecar), Memory and Access Control |
+| 3 | The Runtime calls MCP Gateway → Inbound Auth → Policy Group |
+| 4 | Connectors `inventory` (API Key) and `crm` (no authorization) call the MCP servers by private IP, through VPC Peering |
 
 ```jsonc
 // Agent Runtime
@@ -121,11 +122,10 @@ Scenario: the agent serves users on the Internet and only uses public tools (Saa
 
 | # | Flow |
 |---|---|
-| 1 | The Runtime pulls the image from vCR |
-| 2 | The Runtime calls the LLM (sidecar) / Memory / Access Control |
+| 1 | An internal app in your VPC calls the agent through VPC Peering (Runtime in Private mode) |
+| 2 | The Runtime calls the LLM (directly or sidecar), Memory and Access Control |
 | 3 | The Runtime calls MCP Gateway → Inbound Auth → Policy Group |
-| 4 | Connectors `erp` and `hr` call the private on-premises URL: gateway (Route CIDRs = on-premises CIDR) → VPC Peering → your VPC route table → VPN GW / Interconnect |
-| 5 | Over Interconnect or Site-to-Site VPN to the data center firewall → MCP server |
+| 4 | Connectors `erp` (API Key) and `hr` (OAuth 2LO) call the private on-premises URL: gateway (Route CIDRs = on-premises CIDR) → VPC Peering → your VPC route table → VPN GW / Interconnect → data center firewall → MCP server |
 
 ```jsonc
 // MCP Gateway — Private network + route to on-premises (≤ 50 CIDRs, RFC 1918)
@@ -154,7 +154,7 @@ Scenario: the agent serves users on the Internet and only uses public tools (Saa
 
 | Range | Value | Notes |
 |---|---|---|
-| Your VPC on GreenNode | `xx.xx.x.x/xx` | Subnets for Agent Runtime, MCP Gateway and cloud-hosted MCP servers |
+| Your VPC on GreenNode | `xx.xx.x.x/xx` | Subnets for your cloud-hosted MCP servers and apps, and the subnet you select when you create a Private Runtime or gateway (they still run in the AgentBase VPC) |
 | On-premises data center | `xx.xx.x.x/xx` | Range to add to the MCP Gateway **Route CIDRs** (and to the Runtime's if the agent calls it directly) |
 | AgentBase VPC | `172.30.0.0/16` | Where Private-mode Agent Runtime + MCP Gateway run; your VPC and data center must not use this range |
 
@@ -174,10 +174,11 @@ For production, use Interconnect as the primary path and VPN as the backup.
 - Data center: `<VPC CIDR> → tunnel / Interconnect`.
 - Your VPC: `172.30.0.0/16 → VPC Peering` (created when peering is enabled).
 - MCP Gateway: **Route CIDRs** = `["<on-premises CIDR>"]`.
-- The data center must route the return path `172.30.0.0/16 → tunnel / Interconnect`, and the VPN tunnel must allow this range (traffic from the gateway carries a source IP in the AgentBase VPC — confirm with GreenNode if NAT is involved).
+- The data center must route the return path for **both** `<VPC CIDR>` and `172.30.0.0/16` to the tunnel / Interconnect. Gateway traffic carries a source in the AgentBase VPC, or a VPC address if GreenNode NATs it; a GreenNode VPN tunnel is defined per remote CIDR with your VPC as the local side, so confirm with GreenNode whether it carries `172.30.0.0/16`.
+- Site-to-Site VPN: one tunnel (IPsec Phase 2) per on-premises CIDR, IKEv2, static routes in the VPC route table.
 
 **Step 4: Firewall and TLS.**
-- The data center firewall should only allow `src 172.30.0.0/16 (AgentBase VPC) → dst <on-premises MCP range> tcp/8443` and deny everything else.
+- The data center firewall should only allow `src <VPC CIDR>, 172.30.0.0/16 → dst <on-premises MCP range> tcp/8443`, IKE (UDP 500/4500) and ESP from the GreenNode VPN IP, and deny everything else. Narrow the source to the one GreenNode confirms (the MCP server log shows the real source).
 - The on-premises MCP server runs HTTPS (internal certificate or public CA).
 - Connector URLs use an IP address, or an internal domain name if your VPC forwards DNS to the data center DNS server.
 
@@ -186,7 +187,7 @@ For production, use Interconnect as the primary path and VPN as the backup.
 - [ ] vDNS is enabled on the VPC and its CIDR does not overlap `172.30.0.0/16` (`vserver.sh validate-vpc`)
 - [ ] The Runtime uses the `agent-runtime-vpc` flavor; the gateway uses a flavor that supports `networkMode=PRIVATE`
 - [ ] The tunnel / Interconnect is up; the on-premises MCP server is reachable (ping) from a vServer in your VPC
-- [ ] The data center has the return route and the firewall allows `172.30.0.0/16`
+- [ ] The data center has return routes for the VPC CIDR and `172.30.0.0/16`, and the firewall allows both to the MCP port
 - [ ] A Policy Group is attached to the gateway (without one, every `tools/call` returns 403)
 
 ---
@@ -194,5 +195,10 @@ For production, use Interconnect as the primary path and VPN as the backup.
 ## Notes
 
 - The travel-buddy sample runs its demo with a PUBLIC Runtime, an image on vCR, a Public gateway and the `tavily` connector. Use cases A and B require a real `vpcId` / `subnetId` and connectivity to your data center.
-- Confirm with GreenNode: the endpoint used to call the agent when the Runtime is in Private mode, whether a Private gateway can reach the Internet, and whether traffic over peering is NATed or keeps the `172.30.x` source IP.
+- The diagrams assume that a Private gateway has no Internet access, so Internet MCP servers use a Public gateway.
+- Confirm with GreenNode:
+  - the endpoint used to call the agent when the Runtime is in Private mode;
+  - whether a Private Runtime has outbound Internet access (needed to reach a Public gateway or an external API such as the Zalo Bot API);
+  - whether traffic over peering keeps its `172.30.x` source or is NATed to an address of your VPC (this decides the firewall and security group sources);
+  - whether a Private gateway can reach the Internet.
 - `xx.xx.x.x/xx` is a placeholder: replace it with your actual IP range. Only `172.30.0.0/16` is a real value (the AgentBase VPC CIDR).

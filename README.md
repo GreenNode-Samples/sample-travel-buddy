@@ -51,7 +51,7 @@ Details for each use case (agents that **do not use Tavily**: MCP in a cloud VPC
 
 | | This demo | UC A · MCP in a cloud VPC | UC B · MCP on-premises |
 |---|---|---|---|
-| Runtime | Public · image on vCR | Private (called by an internal app) | Public or Private |
+| Runtime | Public · image on vCR | Private (called by an internal app) | Private (called by an internal app) |
 | MCP Gateway | Public | Private | Private + on-premises Route CIDRs |
 | Connectors → MCP | `tavily` → Internet | `crm`, `inventory` → vServer / VKS | `erp`, `hr` → data center via VPN / Interconnect |
 
