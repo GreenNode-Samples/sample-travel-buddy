@@ -596,12 +596,12 @@ def d3():
 # ═════════════════════════ Public use case: Agent Runtime in PUBLIC mode ═══════════
 # Internet users call the Runtime's public endpoint; the gateway is Public; MCP on the Internet and on AgentBase.
 def d_public():
-    OX = 170                                 # Internet column on the left (users)
+    OX = 70                                  # gutter on the left for the users -> Runtime arrow
     W, Hh = 1430 + OX, 800
     s = []
+    # one Internet band on top: users / apps and the MCP servers on the Internet
     s.append(group(20, 16, W - 40, 94, "Internet", "internet"))
-    s.append(group(20, 130, 140, 630, "Internet", "internet"))
-    s.append(people(60, 600) + lbl_below(60, 600, "Users / apps", ["browser · webhook", "A2A client"]))
+    s.append(people(40, 40) + lbl_right(40, 40, "Users / apps", ["browser · webhook · A2A client"]))
 
     b = []
     b.append(node(1140, 40, "mcp", C["mcp"], "MCP servers on the Internet", ["Tavily · GitHub · Slack …"], "right"))
@@ -639,8 +639,8 @@ def d_public():
 
     s.append(f'<g transform="translate({OX} 0)">{"".join(b)}</g>')
     # 1 · users -> the Runtime's public endpoint (absolute coordinates)
-    s.append(arrow([(108, 624), (OX + 300 - PAD, 624)], "req", "HTTPS · public endpoint", (300, 616)))
-    s.append(step(300, 640, 1))
+    s.append(arrow([(64, 90), (64, 624), (OX + 300 - PAD, 624)], "req", "HTTPS · public endpoint", (OX + 160, 616)))
+    s.append(step(OX + 160, 640, 1))
     s.append(f'<g transform="translate({OX} 0)">{steps_svg(steps, 2)}</g>')
     s.append(legend(30, Hh - 16, [("req", "request / data path")]))
     return svg(W, Hh, s, "Public use case: Internet users call the public Agent Runtime endpoint; a Public MCP Gateway "
@@ -734,27 +734,27 @@ def d4():
 # ═════════════════════════ architecture of each sample repo ═══════════════════════
 # Each diagram is written to docs/<name>.svg of the matching sibling repo (see ARCH_JOBS).
 def a_travel():
-    """sample-travel-buddy: web users -> Runtime (UI + LangGraph) -> LLM / Memory; Tavily through a Public MCP Gateway."""
-    W, Hh = 1500, 470
+    """sample-travel-buddy: web users -> Runtime (UI + LangGraph) -> LLM / Memory; Tavily through a Public MCP Gateway.
+    One Internet band on top holds both the web users and Tavily."""
+    W, Hh, DY = 1500, 610, 130               # DY: everything on the platform sits under the Internet band
     s = []
-    s.append(group(20, 60, 240, 380, "Internet", "internet"))
-    s.append(people(116, 200) + lbl_below(116, 200, "Web users", ["Chat UI · REST · A2A"]))
-    s.append(group(290, 20, 920, 430, "AgentBase Platform — managed by GreenNode", "managed"))
-    s.append(node(340, 60, "gn-ai", C["ai"], "LLM — AI Platform", ["direct or sidecar :18080"]))
-    s.append(node(500, 60, "memory", C["db"], "Memory", ["CUSTOM + SEMANTIC"]))
-    s.append(node(870, 60, "access-control", C["idc"], "Access Control", ["secret: tavily-apikey"]))
-    s.append(node(360, 200, "agent-runtime", C["compute"], "travel-buddy", ["Agent Runtime · Public", "UI + LangGraph"]))
-    mids = gateway_compact(s, 600, 200, "MCP Gateway · Public", ["tavily"], "Network: Public")
+    s.append(group(20, 16, W - 40, 100, "Internet", "internet"))
+    s.append(people(120, 44) + lbl_right(120, 44, "Web users", ["Chat UI · REST · A2A"]))
+    s.append(node(1300, 44, "mcp", C["mcp"], "Tavily MCP", ["web search · extract"], "right"))
+    s.append(group(290, 20 + DY, 920, 430, "AgentBase Platform — managed by GreenNode", "managed"))
+    s.append(node(340, 60 + DY, "gn-ai", C["ai"], "LLM — AI Platform", ["direct or sidecar :18080"]))
+    s.append(node(500, 60 + DY, "memory", C["db"], "Memory", ["CUSTOM + SEMANTIC"]))
+    s.append(node(870, 60 + DY, "access-control", C["idc"], "Access Control", ["secret: tavily-apikey"]))
+    s.append(node(360, 200 + DY, "agent-runtime", C["compute"], "travel-buddy", ["Agent Runtime · Public", "UI + LangGraph"]))
+    mids = gateway_compact(s, 600, 200 + DY, "MCP Gateway · Public", ["tavily"], "Network: Public")
     t = mids["tavily"]
-    s.append(group(1240, 60, 240, 380, "Internet", "internet"))
-    s.append(node(1300, t - 24, "mcp", C["mcp"], "Tavily MCP", ["web search · extract"]))
 
-    s.append(arrow([(164, 224), (360, 224)], "req", "HTTPS", (200, 216)))
-    to_services(s, [(384, 200), (384, 170)], 170, [364, 524], 146)
-    s.append(arrow([(408, 224), (560, 224), (560, 258), (614, 258)], "req", "tools/call", (484, 216)))
-    s.append(arrow([(894, 146), (894, 226)], "req", "API key", (906, 190), "start"))
-    s.append(arrow([(1040, t), (1300, t)], "req", "HTTPS · API key", (1150, t - 8)))
-    s.append(steps_svg([[(200, 240)], [(444, 170)], [(560, 240)], [(894, 168)], [(1150, t + 16)]]))
+    s.append(arrow([(144, 94), (144, 224 + DY), (360, 224 + DY)], "req", "HTTPS", (220, 216 + DY)))
+    to_services(s, [(384, 200 + DY), (384, 170 + DY)], 170 + DY, [364, 524], 146 + DY)
+    s.append(arrow([(408, 224 + DY), (560, 224 + DY), (560, 258 + DY), (614, 258 + DY)], "req", "tools/call", (484, 216 + DY)))
+    s.append(arrow([(894, 146 + DY), (894, 226 + DY)], "req", "API key", (906, 190 + DY), "start"))
+    s.append(arrow([(1040, t), (1324, t), (1324, 92)], "req", "HTTPS · API key", (1150, t - 8)))
+    s.append(steps_svg([[(220, 240 + DY)], [(444, 170 + DY)], [(560, 240 + DY)], [(894, 168 + DY)], [(1150, t + 16)]]))
     s.append(legend(30, Hh - 14, [("req", "request / data path")]))
     return svg(W, Hh, s, "travel-buddy architecture: web users call the Agent Runtime; the agent uses the LLM and Memory, "
                "and Tavily through a Public MCP Gateway whose connector takes its API key from Access Control")
