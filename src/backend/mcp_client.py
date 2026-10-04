@@ -171,7 +171,8 @@ def call_tool(mcp_url: str, tool: str, arguments: dict) -> str:
       - HTTP 403
       - HTTP 200 + result.isError=true + text containing "denied by policy"
     Both are returned as a string starting with DENIED_BY_POLICY, which the system prompt
-    tells the model to treat as "this tool is not allowed".
+    tells the model to treat as "this tool is not allowed". Any other `isError` result is
+    returned with a TOOL_ERROR prefix so the model can tell the tool failed.
     """
     status, body = mcp_request(mcp_url, "tools/call", {"name": tool, "arguments": arguments})
     if status == 403:
@@ -200,4 +201,6 @@ def call_tool(mcp_url: str, tool: str, arguments: dict) -> str:
             f"DENIED_BY_POLICY: tool '{tool}' is not allowed for this agent "
             "by the MCP Gateway Policy Group."
         )
+    if result.get("isError"):
+        return _truncate(f"TOOL_ERROR: {joined or json.dumps(result)}")
     return _truncate(joined or json.dumps(result))

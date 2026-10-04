@@ -65,6 +65,15 @@ def test_denied_by_policy_in_error_result(gateway):
     assert mcp_client.call_tool("https://gw/mcp", "t", {}).startswith("DENIED_BY_POLICY")
 
 
+def test_other_error_results_are_flagged_so_the_model_can_tell_they_failed(gateway):
+    gateway.respond(lambda req, n: rpc({"isError": True, "content": [{"type": "text", "text": "Invalid API key"}]}))
+    assert mcp_client.call_tool("https://gw/mcp", "t", {}) == "TOOL_ERROR: Invalid API key"
+    gateway.respond(lambda req, n: rpc({"isError": True, "content": []}))
+    assert mcp_client.call_tool("https://gw/mcp", "t", {}).startswith("TOOL_ERROR: {")
+    gateway.respond(lambda req, n: rpc({"isError": False, "content": [{"type": "text", "text": "fine"}]}))
+    assert mcp_client.call_tool("https://gw/mcp", "t", {}) == "fine"
+
+
 def test_sse_response_skips_notifications(gateway):
     sse = (
         'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{}}\n\n'
