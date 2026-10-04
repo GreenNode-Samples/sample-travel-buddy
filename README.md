@@ -92,7 +92,7 @@ Requires **Python 3.12** (or Docker) and the GreenNode resources from Steps 1-3 
 cp .env.example .env       # fill values — see the Env reference below
 ```
 
-Without Docker (the backend loads `.env` itself):
+Without Docker (the backend loads `<repo>/.env` itself; only that file is read, never a `.env` from a parent directory):
 
 ```bash
 python3.12 -m venv .venv && source .venv/bin/activate

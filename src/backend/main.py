@@ -33,7 +33,10 @@ from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
-load_dotenv()  # before the imports below: agent.py reads its configuration from the environment
+# Only the repo's own .env (<repo>/.env). load_dotenv() without a path would walk UP the directory
+# tree and could pick up an unrelated .env from a parent folder.
+# Loaded before the imports below: agent.py reads its configuration from the environment.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from greennode_agentbase import (  # noqa: E402
     GreenNodeAgentBaseApp,
