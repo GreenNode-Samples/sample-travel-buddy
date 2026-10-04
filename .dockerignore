@@ -1,4 +1,8 @@
 .git
+.github
+.venv
+.pytest_cache
+.ruff_cache
 .env
 .env.*
 !.env.example
@@ -6,3 +10,4 @@
 __pycache__/
 *.pyc
 docs/
+tests/
