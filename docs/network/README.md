@@ -25,7 +25,7 @@ The diagrams follow the AWS Architecture Diagram layout style, use the official 
 
 Tool-call flow per the documentation: **Agent → MCP Gateway (Inbound Auth) → Policy Group → MCP Connector (Outbound Auth) → MCP Server.**
 
-Agent Runtime and MCP Gateway **never run in your VPC**. In Public mode they are reached through AgentBase's shared public endpoint (this is why the overview diagram draws the **Public** gateway outside the AgentBase VPC); in Private mode they run in the AgentBase VPC and only the network is connected to your VPC through VPC Peering.
+Agent Runtime and MCP Gateway **never run in your VPC**. In Public mode they are reached through AgentBase's shared public endpoint; in Private mode they run in the AgentBase VPC and only the network is connected to your VPC through VPC Peering.
 
 ---
 
@@ -38,14 +38,21 @@ Agent Runtime and MCP Gateway **never run in your VPC**. In Public mode they are
 | 1 | Internal app → Agent Runtime | An internal app in your VPC calls the agent through VPC Peering (Runtime in Private mode) |
 | 2 | Runtime → LLM, Memory, Access Control | One arrow per service. LLM directly or through the Sidecar LLM Proxy `:18080`; Memory and Access Control through the SDK |
 | 3 | Runtime → MCP Gateway | MCP `tools/call`; the gateway verifies Inbound Auth, then checks the Policy Group |
-| 4 | Public gateway · connector `tavily` → MCP on the Internet | Outbound API Key |
-| 5 | Public gateway · connector `stock` → MCP running on Agent Runtime | Example: the `sample-mcp-stock-server` sample |
-| 6 | Private gateway · connector `crm` → MCP in your VPC | Private gateway → VPC Peering → private IP on vServer / VKS |
-| 7 | Private gateway · connector `erp` → MCP on-premises | Private gateway (Route CIDRs = on-premises CIDR) → VPC Peering → your VPC → VPN GW / Interconnect → data center firewall |
+| 4 | Connector `tavily` → MCP on the Internet | Outbound API Key (Internet egress of a Private gateway: see below) |
+| 5 | Connector `stock` → MCP running on Agent Runtime | Example: the `sample-mcp-stock-server` sample |
+| 6 | Connector `crm` → MCP in your VPC | Private gateway → VPC Peering → private IP on vServer / VKS |
+| 7 | Connector `erp` → MCP on-premises | Private gateway (Route CIDRs = on-premises CIDR) → VPC Peering → your VPC → VPN GW / Interconnect → data center firewall |
 
 The unnumbered arrow **vCR → Runtime** is the image pull at deploy time (or from a public registry if you agree), not part of a request.
 
-> The diagram shows **two gateways**: a Private gateway only uses the private network (docs: *"Internal — never leaves the private network"*), so connectors that reach the Internet (`tavily`) and MCP servers with a public endpoint (`stock`) sit on a separate **Public** gateway. The agent can use both gateways; a Private-mode Runtime reaching the Public gateway's endpoint relies on outbound access from the Runtime (see *Confirm with GreenNode* below).
+### One gateway per agent
+
+A gateway holds many connectors (*"Each gateway can route to multiple MCP Tool Servers"*), so the agent uses **one** MCP Gateway for every tool: Internet SaaS, MCP on Agent Runtime, MCP in your VPC and MCP on-premises. That keeps one endpoint, one Inbound Auth, one Policy Group and one audit trail.
+
+- Pick the gateway's network mode by its most private connector: if any connector lives in your VPC or on-premises, create the gateway in **Private** mode. The connectors that reach the Internet (`tavily`) or an MCP runtime's endpoint (`stock`) stay on that same gateway.
+- **Internet egress of a Private gateway: confirm with GreenNode.** The documentation describes the private connection to your VPC but does not say whether a Private gateway can also reach the Internet.
+- If it cannot, keep the single gateway and give the Internet connectors a private URL: run a small reverse proxy (Caddy / nginx) in your VPC that forwards to the SaaS MCP endpoint and leaves through your VPC's NAT, then point the connector at the proxy's private IP (the Outbound Auth header passes through unchanged). Route CIDRs only accept RFC 1918 ranges, so `0.0.0.0/0` is not an option.
+- Splitting tools across two gateways also works, but the agent then depends on two endpoints, two Policy Groups and two audit trails. Use it only as a last resort.
 
 ---
 
@@ -84,7 +91,7 @@ The image pull from vCR (unnumbered arrow) happens at deploy time.
 
 ---
 
-## Use case A · MCP server in your VPC (without Tavily)
+## Use case A · MCP server in your VPC
 
 ![UC A: private cloud](03-uc-private-cloud.svg)
 
@@ -94,6 +101,8 @@ The image pull from vCR (unnumbered arrow) happens at deploy time.
 | 2 | The Runtime calls the LLM (directly or sidecar), Memory and Access Control |
 | 3 | The Runtime calls MCP Gateway → Inbound Auth → Policy Group |
 | 4 | Connectors `inventory` (API Key) and `crm` (no authorization) call the MCP servers by private IP, through VPC Peering |
+
+The diagram shows only the private connectors. An agent that also uses Tavily keeps the `tavily` target on this same gateway (see [One gateway per agent](#one-gateway-per-agent)).
 
 ```jsonc
 // Agent Runtime
@@ -114,7 +123,7 @@ The image pull from vCR (unnumbered arrow) happens at deploy time.
 
 ---
 
-## Use case B · MCP server on-premises (without Tavily)
+## Use case B · MCP server on-premises
 
 > A complete, runnable version of this use case (on-prem MCP server, GreenNode VPN Site-to-Site, strongSwan and firewall configs, lab guide) is in [sample-onprem-mcp-vpn](https://github.com/GreenNode-Samples/sample-onprem-mcp-vpn).
 
@@ -195,7 +204,7 @@ For production, use Interconnect as the primary path and VPN as the backup.
 ## Notes
 
 - The travel-buddy sample runs its demo with a PUBLIC Runtime, an image on vCR, a Public gateway and the `tavily` connector. Use cases A and B require a real `vpcId` / `subnetId` and connectivity to your data center.
-- The diagrams assume that a Private gateway has no Internet access, so Internet MCP servers use a Public gateway.
+- The diagrams draw one gateway per agent. If a Private gateway turns out to have no Internet access, reach Internet MCP servers through a reverse proxy in your VPC (see [One gateway per agent](#one-gateway-per-agent)).
 - Confirm with GreenNode:
   - the endpoint used to call the agent when the Runtime is in Private mode;
   - whether a Private Runtime has outbound Internet access (needed to reach a Public gateway or an external API such as the Zalo Bot API);

@@ -45,15 +45,15 @@ The 3-column dark UI: **Users/Sessions** · **Chat** (markdown + memory callout,
 
 - **Agent Runtime** and **MCP Gateway** are managed by GreenNode on the AgentBase Platform — never inside your VPC. In **Public** mode they are reached through AgentBase's **shared public endpoint**; in **Private** mode they run in the **AgentBase VPC** (`172.30.0.0/16`) and connect privately to your VPC (select VPC + Subnet + Route CIDRs). Images are pulled from **Container Registry (vCR)**, or from a public registry if you agree to that.
 - **LLM, Memory, Access Control** are GreenNode platform services. The LLM is an OpenAI-compatible endpoint: this sample calls it directly via `LLM_BASE_URL`, and on Agent Runtime you can route it through the Sidecar LLM Proxy instead (see [LLM endpoint](#llm-endpoint-optional-sidecar-llm-proxy)). Memory and Access Control are reached through the SDK using an IAM service account that the runtime injects automatically.
-- **MCP Gateway** = Inbound Auth (IAM Permissions / JWT) → Policy Group → **MCP Connector** (URL + Outbound Auth). A **Public** gateway calls MCP servers on the Internet or MCP servers running on Agent Runtime; a **Private** gateway calls MCP servers in your VPC and on-premises (your VPC → VPN / Interconnect).
+- **MCP Gateway** = Inbound Auth (IAM Permissions / JWT) → Policy Group → **MCP Connector** (URL + Outbound Auth). One gateway holds every connector the agent needs (MCP servers on the Internet, on Agent Runtime, in your VPC and on-premises), so an agent talks to **one** gateway with one endpoint, one Policy Group and one audit trail. Use **Public** mode when every connector has a public endpoint (this demo); switch to **Private** mode as soon as one connector lives in your VPC or on-premises (add Route CIDRs for on-premises). The docs do not say whether a Private gateway can also reach the Internet; see [One gateway per agent](docs/network/README.md#one-gateway-per-agent) for how to keep Internet connectors on the same gateway if it cannot.
 
-Details for each use case (agents that **do not use Tavily**: MCP in a cloud VPC, MCP on-premises) and how to connect on-premises to your VPC: **[docs/network/README.md](docs/network/README.md)**.
+Details for each use case (MCP in a cloud VPC, MCP on-premises) and how to connect on-premises to your VPC: **[docs/network/README.md](docs/network/README.md)**.
 
 | | This demo | UC A · MCP in a cloud VPC | UC B · MCP on-premises |
 |---|---|---|---|
 | Runtime | Public · image on vCR | Private (called by an internal app) | Private (called by an internal app) |
-| MCP Gateway | Public | Private | Private + on-premises Route CIDRs |
-| Connectors → MCP | `tavily` → Internet | `crm`, `inventory` → vServer / VKS | `erp`, `hr` → data center via VPN / Interconnect |
+| MCP Gateway (one per agent) | Public | Private | Private + on-premises Route CIDRs |
+| Connectors → MCP | `tavily` → Internet | `crm`, `inventory` → vServer / VKS · `tavily` stays on the same gateway | `erp`, `hr` → data center via VPN / Interconnect · `tavily` stays on the same gateway |
 
 ## Layout
 

@@ -3,9 +3,9 @@
 """AgentBase network diagrams in the AWS Architecture Diagram style.
 
 Writes five SVG files next to this script (they render directly in GitHub READMEs):
-  01-connectivity-map.svg    overview: Agent Runtime + vCR, LLM / Memory / Access Control, MCP Gateways + connectors
+  01-connectivity-map.svg    overview: Agent Runtime + vCR, LLM / Memory / Access Control, one MCP Gateway + connectors
   02-uc-public.svg           Public use case: Runtime in Public mode, Public gateway, MCP on the Internet and on AgentBase
-  03-uc-private-cloud.svg    use case A: Private runtime and gateway, MCP servers in the customer VPC (no Internet)
+  03-uc-private-cloud.svg    use case A: Private runtime and gateway, MCP servers in the customer VPC
   04-uc-hybrid-onprem.svg    use case B: Private runtime and gateway, MCP servers in the customer data center
   05-onprem-connectivity.svg on-premises <-> customer VPC connectivity (VPN / Interconnect, routes, firewall, CIDRs)
 It also writes docs/architecture.svg of each sibling sample repo (ARCH_JOBS).
@@ -16,8 +16,9 @@ Model (GreenNode AgentBase documentation):
     (172.30.0.0/16), which is connected privately to the customer VPC. On-premises networks join the customer
     VPC over VPN Site-to-Site or Interconnect.
   - Every MCP tool call goes Agent -> MCP Gateway (Inbound Auth -> Policy Group) -> MCP Connector (URL +
-    Outbound Auth, secret from Access Control) -> MCP server. A Private gateway only uses the private network,
-    so MCP servers on the Internet sit behind a separate Public gateway.
+    Outbound Auth, secret from Access Control) -> MCP server. One gateway holds every connector an agent needs
+    (Internet, Agent Runtime, customer VPC, on-premises); a Private gateway reaches the VPC and on-premises
+    through the private connection.
   - LLM calls are a separate path: directly to the AI Platform or through the Sidecar LLM Proxy (localhost:18080).
 
 Run:  python3 docs/network/build_diagrams.py
@@ -447,9 +448,9 @@ def gateway_compact(s, x, y, title, names, network):
 
 
 # ═════════════════════════ shared scene for 01 / 03 / 04 ═══════════════════════
-def scene(show, conns, title):
+def scene(show, conns, title, two_gw=False):
     has = lambda k: k in show
-    two_gw = has("internet")                 # overview: a Public and a Private gateway
+    # two_gw: split the connectors over a Public and a Private gateway (kept for reference; diagrams use one gateway)
     DY = 80 if two_gw else 0                 # with two gateways everything under the AgentBase VPC moves down
     SH = 0 if two_gw else 40                 # one gateway: room between Shared services and the AgentBase VPC
     RY = 520 + SH                            # top of the Agent Runtime tile
@@ -578,13 +579,13 @@ def scene(show, conns, title):
 
 def d1():
     return scene({"internet", "hosted", "vpcmcp", "onprem"}, ["tavily", "stock", "erp", "crm"],
-                 "AgentBase connectivity map: Agent Runtime in the AgentBase VPC calls a Public MCP Gateway (Internet MCP, MCP on "
-                 "Agent Runtime) and a Private MCP Gateway (MCP in the customer VPC, MCP on-premises via VPN / Interconnect)")
+                 "AgentBase connectivity map: Agent Runtime in the AgentBase VPC calls one Private MCP Gateway whose connectors "
+                 "reach MCP servers on the Internet, on Agent Runtime, in the customer VPC and on-premises via VPN / Interconnect")
 
 
 def d2():
     return scene({"vpcmcp"}, ["inventory", "crm"],
-                 "Use case A: a Private MCP Gateway calls MCP servers in the customer VPC through connectors, without Internet access")
+                 "Use case A: a Private MCP Gateway calls MCP servers in the customer VPC through connectors")
 
 
 def d3():
