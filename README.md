@@ -34,8 +34,8 @@ The 3-column dark UI: **Users/Sessions** · **Chat** (markdown + memory callout,
 
 > MCP flow: **Agent → MCP Gateway (Inbound Auth) → Policy Group → MCP Connector (Outbound Auth) → MCP server**. LLM calls are a **separate path** (direct to LLM AIP here; on AgentBase Runtime they can also go through the *Sidecar LLM Proxy* — see [LLM endpoint](#llm-endpoint-optional-sidecar-llm-proxy)).
 
-- **Runtime** — `src/backend`: the `GreenNodeAgentBaseApp` SDK, agent = `create_agent` + MCP tools + 2 memory tools; the `X-GreenNode-AgentBase-User-Id` (→ memory `actorId`) / `-Session-Id` (→ `thread_id`) headers partition memory per user. **Both are required on every memory path** — missing → `400` (no default user/session, to avoid mixing data between users).
-- **Memory** — one memory, 2 long-term strategies: `user-preferences` (**CUSTOM**, dedicated extraction prompt) + `trip-facts` (**SEMANTIC**). Checkpointer `AgentBaseMemoryEvents` stores conversations; namespace `/strategies/<id>/actors/<userId>`.
+- **Runtime** — `src/backend`: the `GreenNodeAgentBaseApp` SDK, agent = langchain `create_agent` + middleware (see [Agent loop](#agent-loop)) + MCP tools + 2 memory tools; the `X-GreenNode-AgentBase-User-Id` (→ memory `actorId`) / `-Session-Id` (→ `thread_id`) headers partition memory per user. **Both are required on every memory path** — missing → `400` (no default user/session, to avoid mixing data between users).
+- **Memory** — one memory, 2 long-term strategies: `user-preferences` (**CUSTOM**, dedicated extraction prompt) + `trip-facts` (**SEMANTIC**). Checkpointer `AgentBaseMemoryEvents` stores conversations; namespace `/strategies/<id>/actors/<userId>`. The `recall` tool searches **both** strategies (top 5 each, minimum score 0.3, merged and de-duplicated); `remember` writes to `user-preferences`.
 - **MCP Gateway** (module **MCP Governance**) — `sample-mcp-gw`, **Inbound Auth = IAM Permissions** (alternatives: JWT (default) / No authorization), `tavily` **MCP Connector** (endpoint URL + **Outbound Auth = API Key 2LO**). **Policy Group** `sample-gw-policy` (first match wins): only travel-buddy may call the 5 Tavily actions — a `tools/call` matching no rule gets **403** (verified: unknown token → "Request denied by policy."). Note: with **no** Policy Group attached, *every* `tools/call` is 403; `tools/list` bypasses policy.
 - **Frontend** — `src/frontend`: vanilla SPA, served by the backend at `GET /` (same-origin, no CORS).
 
@@ -58,21 +58,56 @@ Details for each use case (MCP in a cloud VPC, MCP on-premises) and how to conne
 ## Layout
 
 ```
-├── src/backend/          # main.py (routes) · agent.py (LangGraph) · memory_tools.py · mcp_client.py
+├── src/backend/          # main.py (routes) · agent.py (agent loop) · memory_tools.py · mcp_client.py · requirements.txt
 ├── src/frontend/         # index.html · style.css · app.js (no build step)
+├── tests/                # pytest: fake LLM, fake Memory API, mocked MCP gateway (no network)
 ├── docs/
 │   ├── architecture.html            # interactive diagram (archify)
 │   └── network/                     # AWS-style network diagrams (SVG) + README · build_diagrams.py
-├── Dockerfile · .env.example · requirements.txt
+├── Dockerfile · .env.example
 ```
+
+## Agent loop
+
+`src/backend/agent.py` builds the agent with langchain 1.x middleware, so a misbehaving model or tool cannot hang or break a turn:
+
+| Concern | How |
+|---|---|
+| Runaway loops | `ModelCallLimitMiddleware(run_limit=10)` ends the turn; `ToolCallLimitMiddleware(run_limit=8)` refuses further tool calls with an error the model reads, so it still writes an answer |
+| Failing tools | `ToolErrorMiddleware`: an exception in any tool (MCP call, `remember`, `recall`) becomes an error message for the model (exception type only, no trace) instead of killing the turn |
+| Transient LLM errors | `ModelRetryMiddleware(max_retries=2)` on connection errors, 429 and 5xx, on top of the OpenAI client's own retries |
+| Context size | `SummarizationMiddleware`: above ~16,000 tokens the older messages are replaced by a summary and the last 12 are kept; AI tool calls are never separated from their tool results |
+| Current date | a dynamic prompt writes "now" in `Asia/Ho_Chi_Minh` into the system prompt on every model call (the agent object is cached for the life of the process) |
+| Tool output size | MCP tool results are capped at 8,000 characters with a `...[truncated N chars]` marker |
+| Checkpoint traffic | `durability="exit"`: one checkpoint write per turn instead of one per graph step |
+| MCP tools | loaded from the gateway on first use and refreshed every 10 minutes; a failed or empty `tools/list` is retried on the next turn (`/ready` shows recovery); the agent is rebuilt when the tool list changes; one malformed tool schema skips only that tool |
+
+`memories_used` (the "Agent just recalled" callout) lists what `remember` / `recall` returned during the **current** turn only.
 
 ## Run locally
 
+Requires **Python 3.12** (or Docker) and the GreenNode resources from Steps 1-3 below (LLM key, Memory, MCP Gateway connector). Outside AgentBase Runtime also set `GREENNODE_CLIENT_ID` / `GREENNODE_CLIENT_SECRET` (a service account that may call Memory and the gateway).
+
 ```bash
 cp .env.example .env       # fill values — see the Env reference below
-docker build -t travel-buddy . && docker run -p 8080:8080 --env-file .env travel-buddy
+```
+
+Without Docker (the backend loads `.env` itself):
+
+```bash
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r src/backend/requirements.txt
+python src/backend/main.py
 # open http://localhost:8080
 ```
+
+With Docker:
+
+```bash
+docker build -t travel-buddy . && docker run -p 8080:8080 --env-file .env travel-buddy
+```
+
+Run the tests (no network or credentials needed): `pip install pytest ruff && pytest -q`.
 
 ## Deploy to GreenNode AgentBase — via the Portal (UI)
 
@@ -104,7 +139,7 @@ Portal: **https://aiplatform.console.vngcloud.vn** → *AI Platform / AgentBase*
 ### Step 4 — Policy Group (protect the gateway)
 > Evaluation order: Inbound Auth → **Policy Group** (first match wins; no rule matches → 403; no Policy Group attached → all `tools/call` are 403; `tools/list` bypasses policy) → Connector Outbound Auth → MCP server.
 
-1. Deploy the agent first (Step 5), then call `POST /invocations {"op":"whoami"}` on the runtime endpoint to get the agent's `token_sub`.
+1. Deploy the agent first (Step 5) with `DEBUG_OPS=1`, then call `POST /invocations {"op":"whoami"}` on the runtime endpoint (add `-H "X-API-Key: …"` if `AGENT_API_KEY` is set) to get the agent's `token_sub`. Set `DEBUG_OPS` back to `0` afterwards.
 2. Portal → **MCP Governance → Policy Group** → **Create Policy Group** `sample-gw-policy` → add a policy:
    - `allow-travel-tavily` — effect **allow** · principal `iam:<runtime-token_sub>` · actions `tavily__tavily_search`, `tavily__tavily_extract`, `tavily__tavily_crawl`, `tavily__tavily_map`, `tavily__tavily_research` · resources `gateway:sample-mcp-gw`
 3. Back on the **Gateway**, attach the policy group. From then on any caller no rule allows → 403 *"Request denied by policy."*
@@ -116,6 +151,7 @@ Portal: **https://aiplatform.console.vngcloud.vn** → *AI Platform / AgentBase*
 3. **Security Settings** of the runtime: set **IP Access Control** (allowed source CIDRs) and **Inbound Identity** (IAM Permissions / JWT) — see *Production hardening* below.
 4. Open the **endpoint URL** → the chat UI appears immediately (`GET /`).
 5. CLI alternative: `runtime.sh create --name travel-buddy --image … --flavor runtime-s2-general-2x4 --from-cr --env-file .env.deploy`.
+6. **Set `AGENT_API_KEY`** (and Runtime Security Settings) before exposing the endpoint: see [Production hardening](#production-hardening).
 
 ## Env reference
 
@@ -123,14 +159,18 @@ Portal: **https://aiplatform.console.vngcloud.vn** → *AI Platform / AgentBase*
 |---|---|---|
 | `LLM_API_KEY` | Yes | LLM AIP key (`lap-…`) |
 | `LLM_BASE_URL` | optional | OpenAI-compatible endpoint, default LLM AIP `https://maas-llm-aiplatform-hcm.api.vngcloud.vn/v1`. On AgentBase Runtime may point to the Sidecar LLM Proxy `http://localhost:18080` (verify with GreenNode) |
-| `LLM_MODEL` | Yes | e.g. `z-ai/glm-5.3-flash` |
+| `LLM_MODEL` | optional | default `z-ai/glm-5.3-flash` |
 | `AGENTBASE_MEMORY_ID` | Yes | `memory-…` created in Step 2 |
-| `MEMORY_STRATEGY_PREF_ID` | Yes | the `user-preferences` strategy (CUSTOM) |
-| `MEMORY_STRATEGY_FACTS_ID` | Yes | the `trip-facts` strategy (SEMANTIC) |
+| `MEMORY_STRATEGY_PREF_ID` | Yes | the `user-preferences` strategy (CUSTOM): `remember` writes here, `recall` searches it |
+| `MEMORY_STRATEGY_FACTS_ID` | Yes | the `trip-facts` strategy (SEMANTIC): `recall` searches it too |
 | `MCP_TAVILY_URL` | Yes | `<gateway-url>/tavily` |
-| `GREENNODE_CLIENT_ID/SECRET` | local only | only for local runs (the runtime auto-injects them, plus `GREENNODE_AGENT_IDENTITY`) |
-| `AGENT_API_KEY` | optional | if set, `/invocations` + `/api/*` require the `X-API-Key` header (stops strangers burning your LLM credits). **Leave it unset for a frictionless demo** — the bundled UI never asks for a key |
+| `GREENNODE_CLIENT_ID/SECRET` | local only | only for runs outside AgentBase Runtime (the runtime auto-injects them, plus `GREENNODE_AGENT_IDENTITY`) |
+| `AGENT_API_KEY` | **required for any non-local deployment** | when set, `/invocations`, `/a2a`, `/ready` and `/api/*` require the `X-API-Key` header; the bundled UI asks for the key once and keeps it in `sessionStorage`. Memory is partitioned by a user id the **client** chooses, so without a key anyone who reaches the endpoint can read any user's memory and spend your LLM credits |
 | `DEBUG_OPS` | default `0` | `1` enables the `{"op":"whoami"}` identity op — only while setting up policies |
+| `A2A_PUBLIC_URL` | optional | public URL of this runtime, written into the A2A agent card (default: the relative `/a2a`) |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | optional | set all three to trace every turn with Langfuse |
+
+The values in `.env.example` that start with `change-me` are rejected at startup, so a forgotten placeholder fails fast instead of failing later with an obscure 401.
 
 ## LLM endpoint (optional: Sidecar LLM Proxy)
 
@@ -140,15 +180,17 @@ Per the AgentBase docs, LLM calls on a Runtime go through a **Sidecar LLM Proxy*
 
 ## API contract (exposed by the backend)
 
+When `AGENT_API_KEY` is set, every endpoint except the UI, `/health`, `/api/info` and the A2A agent card needs the `X-API-Key` header (`401` otherwise). Errors never include exception text: the response carries a generic message and a `request_id` that matches the server log.
+
 | Method | Path | Description |
 |---|---|---|
-| POST | `/invocations` | body `{"message":"…"}` + headers `X-GreenNode-AgentBase-User-Id`, `-Session-Id` (**both required** — missing → `400`, no defaults; the Runtime sets them on real traffic) → `{"response", "memories_used":[…]}`. `{"op":"whoami"}` → the runtime's identity (needs `DEBUG_OPS=1`) |
-| POST | `/api/chat/stream` | same body/headers → **SSE token stream** (`{"type":"token"|"done"|"error"}`) — the UI uses this with automatic fallback to `/invocations` |
+| POST | `/invocations` | body `{"message":"…"}` (1-4,000 characters; `input` is accepted as an alias) + headers `X-GreenNode-AgentBase-User-Id`, `-Session-Id` (**both required**, 1-128 characters of letters, digits and `. _ : @ + = ~ -`; missing or invalid → `400`, no defaults; the Runtime sets them on real traffic) → `{"response", "memories_used":[…]}`; agent failure → `500`. `{"op":"whoami"}` → the runtime's identity (needs `DEBUG_OPS=1`, else `403`) |
+| POST | `/api/chat/stream` | same body/headers → **SSE token stream** (`{"type":"token"|"done"|"error"}`, `done` carries the final `response`) — the UI uses this and falls back to `/invocations` only if streaming is unavailable. Closing the connection cancels the agent run |
 | GET | `/api/memory?actor=<user>` | records grouped by the 2 strategies |
-| GET | `/api/history?actor=&session=` | conversation (events of type `conversational`) |
+| GET | `/api/history?actor=&session=[&limit=50]` | the last conversation messages (events of type `conversational`; checkpoint blobs are skipped) |
 | GET | `/api/actors` | users and their sessions |
-| GET | `/api/info` · `/health` | config · health |
-| GET | `/ready` | deep readiness: memory + gateway + LLM (200 ok / 503 degraded) |
+| GET | `/api/info` · `/health` | config (resource ids only with a valid key when one is required) · liveness. Both public |
+| GET | `/ready` | deep readiness: memory + gateway tools + LLM configuration (200 ok / 503 degraded). The LLM check is configuration only, so probes cost no tokens |
 
 ## Verified end-to-end (demo account)
 
@@ -170,9 +212,9 @@ This agent is an **A2A server** — other agents can discover and call it using 
 |---|---|---|
 | `/.well-known/agent-card.json` | GET | Agent card: name, skills (`travel-planning`, `personalization`), capabilities (streaming: yes), URL |
 | `/a2a` | POST | JSON-RPC 2.0 `message/send` → returns a standard A2A `Message` (contextId + text parts) |
-| `/a2a` | POST | `message/stream` → SSE: status-update working → artifact-update (token) → completed |
+| `/a2a` | POST | `message/stream` → SSE: `status-update` (working) → `artifact-update` per token (`append`) → final `artifact-update` (`lastChunk`, the complete reply) → `status-update` (completed, `final: true`; a failure ends with state `failed`) |
 
-- The A2A endpoint is **open** (it does not require `X-API-Key`) — this is a deliberate design choice to allow agent discovery.
+- The agent card is public (discovery). `POST /a2a` needs `X-API-Key` when `AGENT_API_KEY` is set. Malformed requests get HTTP `400` with a JSON-RPC error (`-32700` parse, `-32600` invalid request, `-32601` unknown method, `-32602` invalid params); agent failures get `500` with `-32603`.
 - `POST /a2a` **requires** the `X-GreenNode-AgentBase-User-Id` header (→ memory `actorId`; missing → 400, there is no shared default actor). Through AgentBase Runtime this header is attached automatically; when calling directly, send it yourself (`-H 'X-GreenNode-AgentBase-User-Id: alice'`).
 - The A2A `contextId` maps directly to `thread_id` (if `contextId` is missing, the `X-GreenNode-AgentBase-Session-Id` header is used, and only then a newly generated id), so A2A conversations **have memory** just like regular chat.
 - Quick test (the sample message is Vietnamese: "Which area should I stay in for a 3-day trip to Da Lat?"):
@@ -181,13 +223,13 @@ This agent is an **A2A server** — other agents can discover and call it using 
   curl -s -X POST $ENDPOINT/a2a -H 'Content-Type: application/json' -H 'X-GreenNode-AgentBase-User-Id: alice' -d \
     '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"kind":"message","messageId":"m1","role":"user","parts":[{"kind":"text","text":"Đi Đà Lạt 3 ngày nên ở khu nào?"}]}}}' | jq -r '.result.parts[0].text'
   ```
-- Unit tests: `tests/test_a2a.py` (card shape, text extraction from parts, JSON-RPC envelope).
+- Tests: `tests/test_http.py` (card shape, payload validation, send / stream envelopes).
 
 ## Observability — LangFuse v4 (OTel SDK)
 
-Every turn (chat + A2A + stream) is traced with the **LangFuse SDK v4** (`langfuse>=4.0,<5`):
+Every turn (`/invocations`, `/api/chat/stream`, and A2A send + stream) is traced with the **LangFuse SDK v4** (`langfuse>=4.0,<5`):
 
-- Pattern: `_lf_scope()` (`propagate_attributes`) **wraps** the turn, so the trace name / user / session / tags apply to the root **and every child observation** (including cost-bearing generations); `_lf_callback()` (the OTel CallbackHandler) is created **inside** that scope.
+- Pattern: `_traced()` enters `_lf_scope()` (`propagate_attributes`) around the turn, so the trace name / user / session / tags apply to the root **and every child observation** (including cost-bearing generations); the OTel CallbackHandler from `_lf_callback()` is created **inside** that scope.
 - Enable it with just 3 env vars: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`. If any are missing, tracing is disabled automatically and the agent runs normally (`nullcontext`).
 - In the LangFuse UI you will see the model and token usage for each generation, tool calls (`tavily_search`, `recall`), the LangGraph tree, and session/user/tags for filtering.
 
@@ -198,14 +240,17 @@ The sample ships with these guards — flip them on when deploying publicly:
 | Guard | How |
 |---|---|
 | **Runtime Security Settings** | in the Portal runtime's *Security Settings*: **IP Access Control** (allowed source CIDRs) + **Inbound Identity** (IAM Permissions or JWT). Don't use *No authorization* in production |
-| **Memory headers validated** | `X-GreenNode-AgentBase-User-Id` / `-Session-Id` are required on `/invocations`, `/api/chat/stream`, `/a2a` → `400` if missing (no silent defaults → no cross-user memory mixing) |
-| **API key on the endpoint** | set `AGENT_API_KEY=<random>` in the runtime env → `X-API-Key` required on `/invocations` + `/api/*` (for API clients; the live demo runs without it so the UI is zero-friction) |
+| **Memory headers validated** | `X-GreenNode-AgentBase-User-Id` / `-Session-Id` are required on `/invocations`, `/api/chat/stream`, `/a2a` → `400` if missing or malformed (no silent defaults → no cross-user memory mixing) |
+| **API key on the endpoint** | set `AGENT_API_KEY=<random>` in the runtime env → `X-API-Key` required on `/invocations`, `/a2a`, `/ready` and `/api/*` (compared in constant time). **Required for any non-local deployment**: the user id is chosen by the client, so without a key anyone can read any user's memory and spend your LLM credits. The bundled UI prompts for the key once |
+| **Input limits** | messages must be non-empty and at most 4,000 characters; A2A payloads are shape-checked; user, session and context ids are restricted to a safe character set |
+| **No error details** | failures return a generic message plus a request id; the exception is only in the server log |
 | **Hide runtime identity** | keep `DEBUG_OPS=0` (default) — `whoami` is disabled after policy setup |
 | **Policy on the gateway** | already enforced: only this runtime's principal may call `tavily__*` (first match wins; no match → 403; no Policy Group attached → all `tools/call` 403) |
-| **Context budget** | the agent trims history to the last 40 messages (cuts at human-message boundaries, keeps the system prompt) |
-| **Transient failures** | gateway calls retry with backoff on connect errors/5xx (idempotent calls); `recall` degrades gracefully instead of failing the turn |
-| **Timezone** | "today" in the system prompt uses `Asia/Ho_Chi_Minh`, not container UTC |
-| **Readiness probe** | `GET /ready` checks memory + gateway + LLM — wire it to your monitor |
+| **Bounded turns** | at most 10 model calls and 8 tool calls per turn, context summarised above ~16,000 tokens, tool output capped at 8,000 characters (see [Agent loop](#agent-loop)) |
+| **Transient failures** | gateway calls retry with backoff on connection errors (and on 5xx for the idempotent `tools/list`); LLM calls retry on connection errors, 429 and 5xx; memory writes are never retried after a timeout (no duplicate records); a failing tool becomes an error message for the model |
+| **Timezone** | "today" in the system prompt uses `Asia/Ho_Chi_Minh`, not container UTC, and is refreshed on every model call |
+| **Container** | runs as a non-root user (uid 10001) with a `HEALTHCHECK` on `/health` |
+| **Readiness probe** | `GET /ready` checks memory + gateway tools + LLM configuration — wire it to your monitor (send the `X-API-Key` header) |
 
 ## Cost & teardown
 
