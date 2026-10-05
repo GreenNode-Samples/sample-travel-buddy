@@ -1027,13 +1027,54 @@ def a_onprem():
                "server through the customer VPC and GreenNode VPN Site-to-Site")
 
 
+def a_a2a():
+    """sample-multi-agent-a2a: users -> Trip Concierge (orchestrator) -> fan-out over A2A to travel-buddy and
+    zalo-restaurant, and over the MCP Gateway to the stock MCP server. Each branch of the fan-out is straight."""
+    W, Hh, ROW, ORX, GX = 1360, 800, 500, 300, 600
+    r1, r2, r3 = ROW - 140, ROW, ROW + 140          # travel-buddy · zalo-restaurant · MCP Gateway rows
+    s = []
+    s.append(group(20, 16, W - 40, 94, "Internet", "internet"))
+    s.append(people(40, 36) + lbl_right(40, 36, "Users / apps", ["web UI · A2A clients"]))
+    s.append(group(20, 130, W - 40, 640, "AgentBase Platform — managed by GreenNode", "managed"))
+    svc = shared_services(s, ORX + 24 - 64, 166, 460)
+    s.append(node(ORX, ROW - 24, "agent-runtime", C["compute"], "Trip Concierge", ["orchestrator · Agent Runtime",
+                                                                                 "A2A server + client"]))
+    s.append(node(GX, r1 - 24, "agent-runtime", C["compute"], "travel-buddy", ["Agent Runtime · A2A",
+                                                                             "itineraries · memory · Tavily"], "right"))
+    s.append(node(GX, r2 - 24, "agent-runtime", C["compute"], "zalo-restaurant", ["Agent Runtime · A2A",
+                                                                                "menu · bookings"], "right"))
+    mids = gateway_pipeline(s, GX, r3, ["stock"], "Network: Public", "MCP Gateway · Public")
+    s.append(node(GX + 530, mids["stock"] - 24, "mcp", C["mcp"], "vn-stock-mcp", ["Agent Runtime · MCP"]))
+
+    bus = ORX + 120
+    # 1 · users -> orchestrator
+    s.append(arrow([(64, 90), (64, ROW), (ORX, ROW)], "req", "HTTPS", (180, ROW - 8)))
+    # 2 · orchestrator -> LLM and Memory (conversation checkpoints)
+    to_services(s, [(ORX + 24, ROW - 24), (ORX + 24, 316)], 316, [svc["llm"], svc["memory"]], 166 + SVC_TIP)
+    s.append(text(ORX + 14, 400, "LLM · Memory (checkpoints)", 10.5, 600, INK, "end", halo=True))
+    # 3 · fan-out: one straight branch per specialist, called in parallel
+    s.append(line([(ORX + 48, ROW), (bus, ROW)]))
+    s.append(f'<polyline points="{bus},{r1} {bus},{r3}" fill="none" stroke="{INK}" stroke-width="1.6"/>')
+    s.append(arrow([(bus, r1), (GX, r1)], "req", "A2A message/send", ((bus + GX) // 2, r1 - 8)))
+    s.append(arrow([(bus, r2), (GX, r2)], "req", "A2A message/send", ((bus + GX) // 2, r2 - 8)))
+    s.append(arrow([(bus, r3), (GX + 24, r3)], "req", "MCP tools/call", ((bus + GX) // 2, r3 - 8)))
+    # 4 · connector -> stock MCP server
+    s.append(arrow([(GX + 480, mids["stock"]), (GX + 530, mids["stock"])], "req"))
+    s.append(steps_svg([[(64, 300)], [(ORX + 24, 450)], [(bus + 40, r1 + 16), (bus + 40, r2 + 16), (bus + 40, r3 + 16)],
+                        [(GX + 505, mids["stock"] + 18)]]))
+    s.append(legend(30, Hh - 14, [("req", "request / data path")]))
+    return svg(W, Hh, s, "Multi-agent architecture: users call the Trip Concierge orchestrator, which delegates in parallel "
+               "over A2A to travel-buddy and zalo-restaurant and calls the stock MCP server through the MCP Gateway")
+
+
 ROOT = OUT.parents[2]          # the sample-repos folder that holds the sibling repos
 ARCH_JOBS = [("sample-travel-buddy", "architecture.svg", a_travel),
              ("sample-zalo-restaurant", "architecture.svg", a_zalo),
              ("sample-mcp-stock-server", "architecture.svg", a_stock),
              ("sample-mcp-stock-server", "call-flow.svg", a_stock_flow),
              ("sample-byo-agent-mcp-gateway", "architecture.svg", a_byo),
-             ("sample-onprem-mcp-vpn", "architecture.svg", a_onprem)]
+             ("sample-onprem-mcp-vpn", "architecture.svg", a_onprem),
+             ("sample-multi-agent-a2a", "architecture.svg", a_a2a)]
 
 
 JOBS = [("01-connectivity-map.svg", d1), ("02-uc-public.svg", d_public), ("03-uc-private-cloud.svg", d2),
